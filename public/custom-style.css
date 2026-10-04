@@ -1,0 +1,24 @@
+.custom-style-panel{margin-bottom:24px;background:#fff;border:1px solid #cad9c3}
+.custom-style-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px}
+.custom-style-heading h3{margin:0;font-size:16px;color:#345e45}
+.custom-style-heading p{margin-bottom:0}
+.custom-style-grid{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:24px}
+.custom-style-grid label{display:block;margin-bottom:6px}
+#custom-style-prompt{min-height:130px;resize:vertical}
+.style-upload{min-height:60px;display:flex;align-items:center;justify-content:center;background:#f3f7ef}
+.custom-style-references{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px}
+.custom-style-reference{width:100px;position:relative;min-width:0}
+.custom-style-reference>.preview-visual{width:100px;height:76px;border:1px solid var(--line);border-radius:6px}
+.custom-style-reference>span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;margin-top:6px;color:#637b60}
+.custom-style-reference>button{position:absolute;right:3px;top:3px;border-radius:50%;padding:3px 6px;background:#fff}
+.custom-style-actions{display:flex;align-items:center;gap:10px;margin-top:20px;flex-wrap:wrap}
+.custom-style-actions>span{flex:1;min-width:130px}
+.preset-foot{flex-wrap:wrap;justify-content:flex-end}
+.preset-foot>small{flex-basis:100%}
+.character-uploads{display:flex;flex-wrap:wrap;gap:8px}
+.character-uploads>.upload{flex:1;min-width:145px}
+.sheet-upload{background:#eef4e8;border-color:#adc49e;color:#345e45}
+.refs .ref{position:relative}
+.reference-kind{position:absolute;left:2px;right:2px;bottom:2px;text-align:center;background:#ffffffed;border-radius:3px;font-size:9px;padding:3px 2px;color:#345e45}
+.detail-footer{flex-wrap:wrap;gap:10px}
+@media(max-width:760px){.custom-style-grid{grid-template-columns:1fr;gap:15px}.custom-style-heading{flex-wrap:wrap}.custom-style-actions{align-items:stretch}.custom-style-actions>span{flex-basis:100%}.custom-style-actions>button{flex:1;font-size:11px}.character-uploads{flex-direction:column}}

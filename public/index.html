@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ko">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Scene Studio · 대본에서 장면으로</title><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/custom-style.css"></head>
+<body>
+<aside class="app-sidebar">
+  <a class="brand" href="/">◈ <span>SCENE STUDIO<small>SCRIPT TO IMAGE</small></span></a>
+  <button id="new-project" class="primary">＋ 새 프로젝트</button>
+  <div class="nav-label">WORKSPACE</div><div id="projects"></div>
+  <div class="aside-bottom"><span class="dot"></span><span id="connection">Codex 연결 확인 중</span><small>로컬 저장 · API Key 불필요</small></div>
+</aside>
+<main>
+<header><div><span class="eyebrow">YOUR STORY, FRAME BY FRAME</span><h1 id="project-title">대본에서 장면으로.</h1></div><div class="header-actions"><span id="save-state" role="status"></span><button id="save">변경 저장</button><a id="export" class="button" href="#">내보내기 ↗</a></div></header>
+<nav aria-label="작업 단계"><button data-tab="script" class="active">01 <span>대본 & 캐릭터</span></button><button data-tab="scenes">02 <span>장면 스토리보드</span><b id="scene-count">0</b></button><button data-tab="styles">03 <span>스타일 라이브러리</span></button></nav>
+<div id="notice" role="status"></div>
+<section id="script" class="tab">
+  <div class="intro"><span class="eyebrow">THE STARTING POINT</span><h2>이야기의 시작을 입력하세요.</h2><p>대본과 캐릭터를 준비하고, 어울리는 스타일을 눈으로 고르세요.</p></div>
+  <div class="script-grid"><div class="panel script-panel"><label>프로젝트 이름<input id="name" placeholder="프로젝트 이름"></label><div class="label-row"><label for="script-input">대본</label><small id="char-count">0자</small></div><textarea id="script-input" class="script-input" placeholder="내레이션이나 이야기를 그대로 붙여 넣으세요."></textarea><div class="panel-foot"><span>의미 · 행동 · 장소 · 감정 기준으로 장면을 나눕니다.</span><button id="analyze" class="primary">✦ AI 장면 분석</button></div></div>
+  <div class="panel settings-panel"><h3>프로젝트 설정</h3><label>화면 비율<select id="aspect"><option>16:9</option><option>9:16</option><option>1:1</option><option>4:3</option></select></label><div class="field-label">기본 스타일</div><input type="hidden" id="default-style"><div id="project-style-card"></div><button id="choose-project-style" class="wide">▧ 스타일 선택 · 직접 만들기</button><label>꼭 지켜야 할 조건<textarea id="constraints" placeholder="예: 글자 금지. 캐릭터의 노란 우비 유지."></textarea></label><p class="hint">프로젝트 기본 스타일은 모든 장면에 적용됩니다. 개별 장면에서 바꿀 수도 있습니다.</p></div></div>
+  <div class="section-heading"><div><h2>캐릭터 레퍼런스</h2><p>일반 이미지 또는 정면·측면·표정이 담긴 캐릭터 시트를 등록하세요.</p></div><button id="add-character">＋ 캐릭터 추가</button></div><div id="characters" class="characters"></div>
+  <div class="note"><b>ChatGPT 로그인으로 생성</b><p>Codex 공식 이미지 도구가 모델을 자동 선택합니다. 대본과 선택한 스타일 이미지, 등장 캐릭터의 참고 이미지·시트가 OpenAI로 전달되며 계정 사용량이 적용됩니다.</p></div>
+</section>
+<section id="scenes" class="tab hidden">
+  <div class="board-toolbar"><div class="board-heading"><h2>스토리보드</h2><span id="progress"></span></div><div class="actions"><div class="segmented" aria-label="스토리보드 보기"><button id="view-focus" class="active" aria-pressed="true">▣ 집중 편집</button><button id="view-grid" aria-pressed="false">▦ 전체 보드</button></div><button id="add-scene" title="빈 장면 추가">＋ 장면</button><button id="generate" class="primary">✦ 미생성 / 실패 생성</button></div></div>
+  <div class="board-filters"><input id="scene-search" type="search" placeholder="장면 제목 · 대본 · 프롬프트 검색" aria-label="장면 검색"><select id="scene-filter" aria-label="장면 상태 필터"><option value="all">모든 장면</option><option value="pending">생성 필요</option><option value="running">진행 중</option><option value="failed">실패</option><option value="done">완료</option></select><span id="scene-results"></span><div class="scene-jump"><label for="scene-jump">장면 이동</label><input id="scene-jump" type="number" min="1" placeholder="#" aria-label="이동할 장면 번호"><button id="jump-button">이동</button></div></div>
+  <div id="board-workspace" class="board-workspace"><div class="scene-rail" aria-label="장면 탐색"><div class="rail-caption">SCENES <span>선택해서 편집</span></div><div id="scene-nav"></div></div><div id="scene-list"></div></div>
+  <div id="board-grid" class="hidden"><div id="scene-grid"></div><div class="pagination"><button id="grid-prev">← 이전</button><span id="grid-page"></span><button id="grid-next">다음 →</button></div></div>
+  <div class="board-bottom"><span>동시 생성 3개 · 자동 재시도 최대 2회</span><span>Alt + ← / → 장면 이동</span></div>
+</section>
+<section id="styles" class="tab hidden">
+  <div class="library-header"><div><span class="eyebrow">FIND YOUR VISUAL LANGUAGE</span><h2>원하는 스타일을 직접 만들어보세요.</h2><p>텍스트나 참고 이미지로 만들거나, GitHub 스타일을 골라 사용할 수 있습니다.</p></div><button id="style-return">← 작업으로 돌아가기</button></div>
+  <div id="style-target" class="target-banner"></div>
+  <section class="panel custom-style-panel" aria-labelledby="custom-style-title">
+    <div class="custom-style-heading"><div><h3 id="custom-style-title">직접 스타일 만들기</h3><p class="hint">프롬프트와 참고 이미지 중 하나만 입력해도 됩니다. 함께 입력하면 더 구체적으로 표현할 수 있어요.</p></div><button id="custom-style-reset" type="button">＋ 새 스타일</button></div>
+    <form id="custom-style-form">
+      <div class="custom-style-grid"><div><label for="custom-style-name">스타일 이름</label><input id="custom-style-name" maxlength="200" required placeholder="예: 따뜻한 수채화"><label for="custom-style-prompt">스타일 프롬프트 (선택)</label><textarea id="custom-style-prompt" maxlength="20000" placeholder="예: 부드러운 수채화, 연한 파스텔 색감, 종이 질감, 은은한 빛. 선은 간결하게."></textarea></div>
+      <div><div class="field-label">스타일 참고 이미지 (선택)</div><label class="upload style-upload">＋ 스타일 이미지 추가<input id="custom-style-images" type="file" accept="image/png,image/jpeg,image/webp" multiple></label><p class="hint">최대 5장 · PNG, JPEG, WebP · 한 번에 합계 32MB<br>이미지의 색감·질감·화풍을 참고하며 캐릭터 외형은 캐릭터 시트를 따릅니다.</p><div id="custom-style-references" class="custom-style-references"></div></div></div>
+      <div class="custom-style-actions"><span id="custom-style-status" class="hint" role="status"></span><button type="submit">라이브러리에 저장</button><button type="submit" data-apply="true" class="primary" id="custom-style-apply">저장하고 적용</button></div>
+    </form>
+  </section>
+  <details class="source-settings"><summary>GitHub 프리셋 소스 관리 <span id="source-count"></span></summary><div class="panel"><form id="source-form" class="source-form"><label>GitHub 공개 저장소<input id="repo-url" placeholder="https://github.com/owner/repository" required></label><label>브랜치 / 태그 (선택)<input id="repo-ref" placeholder="기본 브랜치"></label><button class="primary">등록 & 동기화</button></form><p class="hint">JSON과 Markdown의 프롬프트 및 예시 이미지 링크를 함께 동기화합니다.</p><div id="sources"></div></div></details>
+  <div class="filter-row"><input id="style-search" type="search" placeholder="원하는 스타일 검색"><select id="style-category" aria-label="스타일 카테고리"><option value="">모든 카테고리</option></select><label class="inline"><input type="checkbox" id="favorite-only"> 즐겨찾기</label><label class="inline"><input type="checkbox" id="preview-only"> 미리보기 있음</label><span id="preset-count"></span></div>
+  <div id="preview-notice" class="hint"></div><div id="presets" class="preset-grid"></div><div class="pagination"><button id="styles-prev">← 이전</button><span id="styles-page"></span><button id="styles-next">다음 →</button></div>
+</section>
+</main>
+<dialog id="modal"><button id="close-modal" class="close" aria-label="닫기">✕</button><h2 id="modal-title"></h2><pre id="modal-content"></pre></dialog>
+<dialog id="input-modal"><form id="input-form"><h2 id="input-title"></h2><p id="input-description"></p><div id="input-fields"></div><div class="actions dialog-actions"><button type="button" id="input-cancel">취소</button><button class="primary" type="submit">확인</button></div></form></dialog>
+<dialog id="style-detail"><div class="detail-heading"><div><small>STYLE PREVIEW</small><h2 id="detail-name"></h2></div><button id="close-detail" aria-label="스타일 미리보기 닫기">✕</button></div><div class="detail-layout"><div><div id="detail-image"></div><div id="detail-thumbs"></div><p id="detail-image-caption" class="hint">참고 이미지 · 현재 대본으로 생성한 이미지가 아닙니다.</p></div><div class="detail-info"><p id="detail-description"></p><div id="detail-meta"></div><details><summary>스타일 프롬프트 보기</summary><pre id="detail-prompt"></pre></details><p class="hint">이미지의 등장인물과 내용은 가져오지 않고 표현 스타일만 적용합니다.</p></div></div><div class="detail-footer"><button id="detail-favorite">☆ 즐겨찾기</button><button id="detail-edit">복사해서 편집</button><button id="detail-apply" class="primary">이 스타일 적용</button></div></dialog>
+<script type="module" src="/app.js"></script></body></html>
