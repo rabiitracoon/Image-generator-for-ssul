@@ -3,11 +3,12 @@ let state={projects:[],presets:[],sources:[],favorites:[]};
 let current=localStorage.getItem('scene-project'),dirty=false,tab='script',refreshing=false,saving=false;
 let boardView='focus',gridPage=0,stylePage=0,styleTarget=null,detailId=null;
 const selectedByProject=new Map(),versions=new Map();
-let styleDraft={id:null,references:[],uploads:[]},styleSaving=false;
+let styleDraft={id:null,references:[],uploads:[]},styleSaving=false,engineStatus=null;
+let characterDraft={id:null,references:[],uploads:[]},characterSaving=false,characterReading=false,sheetCharacterId=null,sheetSubmitting=false;
 const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const p=()=>state.projects.find(x=>x.id===current);
-const locked=()=>p()?.analyzing||p()?.scenes.some(s=>['queued','running','retrying'].includes(s.status));
+const locked=()=>p()?.analyzing||p()?.scenes.some(s=>['queued','running','retrying'].includes(s.status))||p()?.characters.some(c=>['queued','running','retrying'].includes(c.sheetJob?.status));
 const statuses={draft:'생성 필요',queued:'대기',running:'생성 중',retrying:'재시도',failed:'실패',done:'완료'};
 async function api(url,method='GET',data){const r=await fetch('/api/'+url,{method,headers:{'Content-Type':'application/json'},...(data?{body:JSON.stringify(data)}:{})});const result=await r.json();if(!r.ok)throw Error(result.error||'요청 실패');return result;}
 function notice(message=''){$('#notice').textContent=message;}
@@ -25,7 +26,8 @@ function render(){const project=p();$('#projects').innerHTML=state.projects.map(
  $('#project-title').textContent=project.name;$('#scene-count').textContent=project.scenes.length;$('#export').href=`/api/projects/${project.id}/export`;
  $('#name').value=project.name;$('#script-input').value=project.script;$('#constraints').value=project.constraints;$('#aspect').value=project.aspectRatio;$('#char-count').textContent=`${project.script.length.toLocaleString()}자`;
  $('#analyze').textContent=project.analyzing?'✦ 장면 분석 중…':'✦ AI 장면 분석';$('#analyze').disabled=locked();$('#generate').disabled=locked()||!project.scenes.length;
- ['#add-scene','#add-character','#save','#name','#script-input','#constraints','#aspect'].forEach(s=>$(s).disabled=locked());
+ ['#add-scene','#add-character','#create-character-sheet','#save','#name','#script-input','#constraints','#aspect'].forEach(s=>$(s).disabled=locked());
+ renderAnalysisModel();
  renderProjectStyle();
  renderCharacters(project);
  renderScenes();renderStyles();if(project.analysisError)notice(project.analysisError);
@@ -63,7 +65,7 @@ function sceneEditor(s,index,list){const vi=Math.min(versions.get(s.id)??s.image
 }
 
 function renderCharacters(project){
- $('#characters').innerHTML=project.characters.length?project.characters.map(c=>`<article class="character"><div class="character-head"><h3>◉ ${esc(c.name)}</h3><button data-delete-char="${c.id}" title="캐릭터 삭제" ${locked()?'disabled':''}>✕</button></div><p>${esc(c.description||'외형 설명 없음')}</p><div class="refs">${c.references.map(r=>`<div class="ref" title="${esc(r.name)}"><img src="${esc(r.url)}" alt="${esc(r.name)}"><span class="reference-kind">${r.kind==='character-sheet'?'캐릭터 시트':'외형 참고'}</span><button data-delete-ref="${r.id}" aria-label="${esc(r.name)} 삭제" ${locked()?'disabled':''}>✕</button></div>`).join('')}</div><div class="character-uploads"><label class="upload">＋ 일반 참고 이미지<input data-upload="${c.id}" data-kind="reference" type="file" accept="image/png,image/jpeg,image/webp" multiple ${locked()?'disabled':''}></label><label class="upload sheet-upload">＋ 캐릭터 시트 추가<input data-upload="${c.id}" data-kind="character-sheet" type="file" accept="image/png,image/jpeg,image/webp" multiple ${locked()?'disabled':''}></label></div><p class="hint">정면·측면·뒷모습·표정이 모인 시트도 한 장 그대로 등록하세요.<br>시트와 일반 이미지 합계 최대 10장 · 파일당 32MB</p></article>`).join(''):'<div class="empty">반복 등장하는 캐릭터가 있나요?<br>캐릭터를 추가한 뒤 참고 이미지나 캐릭터 시트를 등록하세요.</div>';
+ $('#characters').innerHTML=project.characters.length?project.characters.map(c=>`<article class="character"><div class="character-head"><h3>◉ ${esc(c.name)}</h3><div><button data-edit-char="${c.id}" title="캐릭터 설명 및 첨부 수정" ${locked()?'disabled':''}>편집</button><button data-delete-char="${c.id}" title="캐릭터 삭제" ${locked()?'disabled':''}>✕</button></div></div><p>${esc(c.description||'외형 설명 없음')}</p><div class="refs">${c.references.map(r=>`<div class="ref" title="${esc(r.name)}"><button class="reference-view" data-view-ref="${r.id}" aria-label="${esc(r.name)} 크게 보기"><img src="${esc(r.url)}" alt="${esc(r.name)}"><span class="reference-kind">${r.kind==='character-sheet'?'캐릭터 시트':'외형 참고'}</span></button><button data-delete-ref="${r.id}" aria-label="${esc(r.name)} 삭제" ${locked()?'disabled':''}>✕</button></div>`).join('')}</div><div class="character-uploads"><label class="upload">＋ 일반 참고 이미지<input data-upload="${c.id}" data-kind="reference" type="file" accept="image/png,image/jpeg,image/webp" multiple ${locked()?'disabled':''}></label><label class="upload sheet-upload">＋ 캐릭터 시트 첨부<input data-upload="${c.id}" data-kind="character-sheet" type="file" accept="image/png,image/jpeg,image/webp" multiple ${locked()?'disabled':''}></label></div><button data-generate-sheet="${c.id}" class="wide secondary character-sheet-button" ${locked()||c.references.length>=10?'disabled':''}>✦ 설명으로 시트 생성</button>${c.sheetJob?`<div class="sheet-job"><span class="badge ${esc(c.sheetJob.status)}">시트 ${esc(statuses[c.sheetJob.status]||c.sheetJob.status)}</span>${c.sheetJob.status==='done'?'<span class="hint">참고 이미지에 등록됨</span>':''}${c.sheetJob.error?`<p class="error-text">${esc(c.sheetJob.error)}</p>`:''}</div>`:''}<p class="hint">등록된 시트는 이 캐릭터가 선택된 장면에 자동 적용됩니다.<br>시트와 일반 이미지 합계 최대 10장 · 파일당 32MB</p></article>`).join(''):'<div class="empty"><strong>시트가 있다면 첨부하고, 없다면 설명으로 만들어보세요.</strong><br>위의 ‘캐릭터 추가 · 시트 첨부’ 또는 ‘설명으로 시트 만들기’를 눌러 시작하세요.</div>';
 }
 async function readImage(file){
  if(file.size>32e6)throw Error('이미지는 32MB 이하만 가능합니다.');
@@ -159,9 +161,74 @@ $('#choose-project-style').onclick=()=>openStyles();
 $('#project-style-card').onclick=e=>action(async()=>{if(e.target.closest('[data-project-style-clear]')){if(locked())throw Error('작업 완료 후 수정해 주세요.');collect();p().defaultStyleId='';$('#default-style').value='';mark();renderProjectStyle();renderScenes();}});
 $('#analyze').onclick=()=>action(async()=>{if(p().scenes.length&&!await ask('대본을 다시 분석할까요?',[],'현재 장면 편집과 이미지 연결은 새 분석 결과로 바뀝니다. 기존 이미지 파일은 로컬에 남습니다.'))return;collect();const {scenes,...fields}=p();await api(`projects/${current}`,'PUT',fields);dirty=false;await api(`projects/${current}/analyze`,'POST',{});await refresh();showTab('scenes');});
 $('#generate').onclick=()=>action(async()=>{await save();await api(`projects/${current}/generate`,'POST',{});await refresh();});
-$('#add-character').onclick=()=>action(async()=>{const answer=await ask('캐릭터 추가',[{key:'name',label:'캐릭터 이름'},{key:'description',label:'일관되게 유지할 외형 설명 (머리, 얼굴, 의상 등)',multiline:true,required:false}]);if(!answer)return;const {name,description}=answer;if(dirty)await save();await api(`projects/${current}/characters`,'POST',{name,description});await refresh();});
+function releaseCharacterUploads(){for(const upload of characterDraft.uploads)URL.revokeObjectURL(upload.previewUrl);}
+function renderCharacterDraft(){
+ const images=[...characterDraft.references.map(r=>({...r,stored:true})),...characterDraft.uploads.map((r,index)=>({...r,index,url:r.previewUrl}))];
+ $('#character-draft-images').innerHTML=images.map(r=>`<div class="character-draft-image">${imageMarkup(r.url,r.name)}<span>${r.kind==='character-sheet'?'캐릭터 시트':'외형 참고'}</span><button type="button" ${r.stored?`data-remove-char-ref="${r.id}"`:`data-remove-char-upload="${r.index}"`} aria-label="${esc(r.name)} 첨부 제거">✕</button></div>`).join('')||'<p class="hint">첨부된 이미지가 없습니다. 설명으로 시트를 만들 수 있어요.</p>';
+}
+function openCharacterEditor(character=null,generateNext=false){
+ if(locked())throw Error('진행 중인 작업이 완료된 후 캐릭터를 편집해 주세요.');
+ releaseCharacterUploads();characterDraft={id:character?.id||null,references:structuredClone(character?.references||[]),uploads:[]};
+ $('#character-form').reset();$('#character-name').value=character?.name||'';$('#character-description').value=character?.description||'';
+ $('#character-form-title').textContent=character?'캐릭터 편집 · 시트 첨부':generateNext?'설명으로 새 캐릭터 시트 만들기':'캐릭터 추가 · 시트 첨부';
+ $('#character-form-status').textContent='';renderCharacterDraft();$('#character-modal').showModal();
+}
+$('#add-character').onclick=()=>action(()=>openCharacterEditor());
+$('#create-character-sheet').onclick=()=>action(()=>openCharacterEditor(null,true));
+$('#character-cancel').onclick=()=>{if(!characterSaving&&!characterReading)$('#character-modal').close();};
+$('#character-modal').addEventListener('close',()=>{releaseCharacterUploads();characterDraft={id:null,references:[],uploads:[]};});
+$('#character-modal').addEventListener('cancel',e=>{if(characterSaving||characterReading)e.preventDefault();});
+$('#character-images').onchange=()=>action(async()=>{
+ const input=$('#character-images'),files=[...input.files],kind=$('#character-upload-kind').value;input.value='';
+ characterReading=true;$('#character-form').querySelectorAll('button,input,textarea,select').forEach(el=>el.disabled=true);
+ try{
+  if(characterDraft.references.length+characterDraft.uploads.length+files.length>10)throw Error('캐릭터당 참고 이미지는 최대 10장입니다.');
+  if(characterDraft.uploads.reduce((sum,r)=>sum+r.size,0)+files.reduce((sum,f)=>sum+f.size,0)>32e6)throw Error('한 번에 첨부하는 이미지 합계는 32MB 이하로 선택해 주세요.');
+  // Read all files before changing the draft so one bad file cannot leave a partial upload.
+  const uploads=await Promise.all(files.map(readImage));
+  uploads.forEach((r,index)=>characterDraft.uploads.push({...r,kind,size:files[index].size,previewUrl:URL.createObjectURL(files[index])}));renderCharacterDraft();$('#character-form-status').textContent='';
+ }catch(error){$('#character-form-status').textContent=error.message;throw error;}
+ finally{characterReading=false;$('#character-form').querySelectorAll('button,input,textarea,select').forEach(el=>el.disabled=false);}
+});
+$('#character-draft-images').onclick=e=>{
+ const button=e.target.closest('button');if(!button||characterSaving||characterReading)return;
+ if(button.dataset.removeCharRef)characterDraft.references=characterDraft.references.filter(r=>r.id!==button.dataset.removeCharRef);
+ if(button.hasAttribute('data-remove-char-upload')){const [r]=characterDraft.uploads.splice(Number(button.dataset.removeCharUpload),1);URL.revokeObjectURL(r.previewUrl);}
+ renderCharacterDraft();
+};
+$('#character-form').onsubmit=e=>{e.preventDefault();if(characterSaving||characterReading)return;action(async()=>{
+ const generateNext=e.submitter?.dataset.sheet==='true',name=$('#character-name').value.trim(),description=$('#character-description').value;
+ if(generateNext&&!description.trim()){$('#character-form-status').textContent='시트를 만들려면 캐릭터의 외형을 설명해 주세요.';return;}
+ characterSaving=true;$('#character-form').querySelectorAll('button,input,textarea,select').forEach(el=>el.disabled=true);
+ try{
+  if(dirty)await save();const payload={name,description,referenceIds:characterDraft.references.map(r=>r.id),images:characterDraft.uploads.map(({name,base64,kind})=>({name,base64,kind}))};
+  const character=await api(`projects/${current}/characters${characterDraft.id?'/'+characterDraft.id:''}`,characterDraft.id?'PUT':'POST',payload);
+  $('#character-modal').close();await refresh();notice('캐릭터와 첨부 이미지를 저장했습니다.');if(generateNext)await openSheetGenerator(character.id);
+ }catch(error){$('#character-form-status').textContent=error.message;throw error;}
+ finally{characterSaving=false;$('#character-form').querySelectorAll('button,input,textarea,select').forEach(el=>el.disabled=false);}
+});};
+async function openSheetGenerator(characterId){
+ if(locked())throw Error('작업 완료 후 시트를 생성해 주세요.');if(dirty)await save();
+ const c=p().characters.find(c=>c.id===characterId);if(!c)throw Error('캐릭터를 찾을 수 없습니다.');if(c.references.length>=10)throw Error('이미지 한 장을 제거한 뒤 시트를 생성해 주세요.');
+ sheetCharacterId=c.id;$('#sheet-form').reset();$('#sheet-title').textContent=`${c.name} · 캐릭터 시트 만들기`;$('#sheet-description').value=c.description;
+ $('#sheet-form-status').textContent='';$('#sheet-prompt-preview').textContent='';
+ const template=await api('character-sheet-template');$('#sheet-source').href=template.source.url;
+ const settings=state.settings,engine=settings.imageProvider==='openai'?`${settings.imageModel} · 품질 ${settings.imageQuality}`:'ChatGPT 공식 이미지 도구 · 이미지 모델 자동 선택';
+ $('#sheet-engine').textContent=`생성: ${engine}. 기존 캐릭터 참고 이미지 ${c.references.length}장도 외형 유지에 사용합니다.`;$('#sheet-modal').showModal();
+}
+const sheetInput=()=>({characterId:sheetCharacterId,description:$('#sheet-description').value,stylePrompt:$('#sheet-style-prompt').value,useProjectStyle:$('#sheet-use-style').checked});
+$('#sheet-cancel').onclick=()=>{if(!sheetSubmitting)$('#sheet-modal').close();};
+$('#sheet-modal').addEventListener('cancel',e=>{if(sheetSubmitting)e.preventDefault();});
+$('#sheet-preview').onclick=()=>action(async()=>{try{const r=await api(`projects/${current}/character-sheet-preview`,'POST',sheetInput());$('#sheet-prompt-preview').textContent=r.prompt;$('#sheet-form-status').textContent='';}catch(error){$('#sheet-form-status').textContent=error.message;throw error;}});
+$('#sheet-form').onsubmit=e=>{e.preventDefault();if(sheetSubmitting)return;action(async()=>{
+ sheetSubmitting=true;const input=sheetInput();$('#sheet-form').querySelectorAll('button,input,textarea').forEach(el=>el.disabled=true);$('#sheet-form-status').textContent='생성을 준비하는 중…';
+ try{await api(`projects/${current}/character-sheet`,'POST',input);$('#sheet-modal').close();await refresh();notice('캐릭터 시트 생성이 시작되었습니다. 완성되면 참고 이미지에 자동 등록됩니다.');}
+ catch(error){$('#sheet-form-status').textContent=error.message;throw error;}finally{sheetSubmitting=false;$('#sheet-form').querySelectorAll('button,input,textarea').forEach(el=>el.disabled=false);}
+});};
+function viewReference(id){const ref=p().characters.flatMap(c=>c.references).find(r=>r.id===id);if(!ref)return;$('#reference-title').textContent=ref.name;$('#reference-image').src=ref.url;$('#reference-image').alt=ref.name;$('#reference-download').href=ref.url;$('#reference-download').download=ref.name;$('#reference-model').textContent=ref.engine?`생성: ${ref.engine==='codex'?'ChatGPT 공식 이미지 도구':ref.engine}${ref.controllerModel?' · 작업 지시 GPT: '+ref.controllerModel:''}`:'첨부한 참고 이미지';$('#reference-modal').showModal();}
+$('#close-reference').onclick=()=>$('#reference-modal').close();
 $('#characters').addEventListener('change',e=>action(async()=>{const input=e.target;if(!input.dataset.upload)return;if(dirty)await save();for(const file of input.files){const image=await readImage(file);await api(`projects/${current}/references`,'POST',{characterId:input.dataset.upload,...image,kind:input.dataset.kind||'reference'});}await refresh();notice(input.dataset.kind==='character-sheet'?'캐릭터 시트를 등록했습니다. 등장 장면에 외형 참고로 적용됩니다.':'캐릭터 참고 이미지를 등록했습니다.');}));
-$('#characters').onclick=e=>action(async()=>{const b=e.target.closest('button');if(!b)return;if(dirty)await save();if(b.dataset.deleteChar)await api(`projects/${current}/characters/${b.dataset.deleteChar}`,'DELETE',{});if(b.dataset.deleteRef)await api(`projects/${current}/references/${b.dataset.deleteRef}`,'DELETE',{});await refresh();});
+$('#characters').onclick=e=>action(async()=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.viewRef)return viewReference(b.dataset.viewRef);if(b.dataset.editChar)return openCharacterEditor(p().characters.find(c=>c.id===b.dataset.editChar));if(b.dataset.generateSheet)return openSheetGenerator(b.dataset.generateSheet);if(dirty)await save();if(b.dataset.deleteChar)await api(`projects/${current}/characters/${b.dataset.deleteChar}`,'DELETE',{});if(b.dataset.deleteRef)await api(`projects/${current}/references/${b.dataset.deleteRef}`,'DELETE',{});await refresh();});
 $('#add-scene').onclick=()=>{collect();const id=crypto.randomUUID();p().scenes.push({id,title:'새 장면',sourceText:'',prompt:'',reason:'사용자 추가',characterIds:[],styleId:null,status:'draft',images:[]});$('#scene-search').value='';$('#scene-filter').value='all';selectedByProject.set(current,id);boardView='focus';mark();renderScenes();$('#scene-nav .active')?.scrollIntoView({block:'nearest'});};
 $('#scene-nav').onclick=e=>{const b=e.target.closest('[data-select-scene]');if(b)selectScene(b.dataset.selectScene);};
 $('#scene-grid').onclick=e=>{const b=e.target.closest('[data-select-scene]');if(b)selectScene(b.dataset.selectScene);};
@@ -196,9 +263,16 @@ $('#styles-prev').onclick=()=>{stylePage--;renderStyles();$('#styles').scrollTop
 document.addEventListener('keydown',e=>{if(!saving&&!e.target.closest('input,textarea,select,[contenteditable="true"]')&&e.altKey&&tab==='scenes'&&!document.querySelector('dialog[open]')&&['ArrowLeft','ArrowRight'].includes(e.key)){e.preventDefault();navigateScene(e.key==='ArrowLeft'?-1:1);}if((e.metaKey||e.ctrlKey)&&e.key==='s'){e.preventDefault();if(!locked()&&!saving)action(save);}});
 window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue='';}});
 const textNames={codex:'ChatGPT',claude:'Claude'};
+function renderAnalysisModel(){
+ const settings=state.settings||engineStatus?.settings;if(!settings)return;
+ const model=settings.textProvider==='claude'?settings.claudeModel:settings.codexModel||engineStatus?.codexModel?.model;
+ $('#analysis-model').textContent=`분석 모델: ${settings.textProvider==='claude'?'Claude':'GPT'} · ${model||'확인 필요'}${settings.textProvider==='codex'&&!settings.codexModel?' (기본 모델)':''}`;
+ const run=p()?.analysisRun;$('#last-analysis-model').textContent=run?`${run.status==='running'?'현재 분석':run.status==='done'?'최근 분석':'최근 분석 실패'}: ${run.provider==='claude'?'Claude':'GPT'} · ${run.model||'모델 확인 중'}`:'';
+}
 function showEngine(status){const s=status.settings,api=s.imageProvider==='openai';
+ engineStatus=status;state.settings=s;renderAnalysisModel();
  $('#connection').textContent=status.ready?`${textNames[s.textProvider]} 분석 · ${api?'API':'ChatGPT'} 이미지`:'AI 연결 확인 필요';
- $('#engine-summary').textContent=api?`로컬 저장 · ${s.imageModel}`:'로컬 저장 · API Key 불필요';
+ $('#engine-summary').textContent=`분석: ${status.textModel||'모델 확인 필요'}\n이미지: ${api?s.imageModel:'ChatGPT 자동 선택'}`;
  $('#engine-note-title').textContent=api?`OpenAI API로 생성 · ${s.imageModel}`:'ChatGPT 로그인으로 생성';
  $('#engine-note').textContent=(api?`OpenAI Images API를 API 키로 직접 호출합니다 (품질 ${s.imageQuality}). 장면 프롬프트와 선택한 스타일 이미지, 등장 캐릭터의 참고 이미지·시트가 OpenAI로 전달되며 API 사용량이 과금됩니다.`:'Codex 공식 이미지 도구가 모델을 자동 선택합니다. 대본과 선택한 스타일 이미지, 등장 캐릭터의 참고 이미지·시트가 OpenAI로 전달되며 계정 사용량이 적용됩니다.')+(s.textProvider==='claude'?` 장면 분석에는 대본이 Anthropic(Claude ${s.claudeModel})으로 전달됩니다.`:'');}
 const loginNames={codex:'ChatGPT',claude:'Claude'},loginPolls={};
@@ -224,16 +298,32 @@ async function checkStatus(){const status=await api('status');showEngine(status)
 let settingsInfo=null;
 function settingsVisibility(){$('[data-login-row="codex"]').classList.toggle('hidden',![$('#set-text-provider').value,$('#set-image-provider').value].includes('codex'));$$('#settings-form [data-show]').forEach(el=>el.classList.toggle('hidden',![$('#set-text-provider').value,$('#set-image-provider').value].includes(el.dataset.show)));}
 function fillOptions(select,values,selected){select.innerHTML=values.map(v=>`<option>${v}</option>`).join('');select.value=selected;}
+function fillCodexModels(info,selected=info.settings.codexModel){
+ const models=info.options.codexModels,defaultInfo=info.defaultCodexModel||info.codexModel;
+ const automatic=defaultInfo.source==='environment'?`환경 설정 · ${defaultInfo.model}`:`기본 모델 · ${defaultInfo.model||'확인 필요'}`;
+ $('#set-codex-model').innerHTML=`<option value="">${esc(automatic)}</option>`+models.map(m=>`<option value="${esc(m.model)}">${esc(m.displayName)} · ${esc(m.model)}</option>`).join('')+'<option value="__custom">모델 ID 직접 입력</option>';
+ $('#set-codex-model').value=!selected?'':models.some(m=>m.model===selected)?selected:'__custom';
+ $('#set-codex-model-custom').value=selected||'';codexModelSelection();
+}
+function codexModelSelection(){
+ const selected=$('#set-codex-model').value,info=settingsInfo;$('#custom-codex-model-field').classList.toggle('hidden',selected!=='__custom');
+ const model=selected==='__custom'?$('#set-codex-model-custom').value.trim():selected||(info?.defaultCodexModel||info?.codexModel)?.model;
+ $('#codex-model-info').textContent=`선택: ${model||'기본 모델 확인 필요'}${info?.modelCatalogError?' · '+info.modelCatalogError+' 모델 ID를 직접 지정할 수 있습니다.':''}`;
+}
+$('#set-codex-model').onchange=codexModelSelection;$('#set-codex-model-custom').oninput=codexModelSelection;
+$('#reload-codex-models').onclick=()=>action(async()=>{const button=$('#reload-codex-models'),selected=$('#set-codex-model').value==='__custom'?$('#set-codex-model-custom').value.trim():$('#set-codex-model').value;button.disabled=true;try{settingsInfo=await api('settings?refreshModels=1');fillCodexModels(settingsInfo,selected);}finally{button.disabled=false;}});
 function showKeyStatus(openai){$('#openai-key-status').textContent=openai.configured?`${openai.source==='env'?'환경 변수 OPENAI_API_KEY':'저장된 키'} 사용 중 (…${openai.last4})`:'저장된 키 없음';$('#clear-openai-key').classList.toggle('hidden',openai.source!=='saved');}
 $('#ai-settings').onclick=()=>action(async()=>{settingsInfo=await api('settings');const {settings,options,openai}=settingsInfo;
  $('#set-text-provider').value=settings.textProvider;$('#set-image-provider').value=settings.imageProvider;
  fillOptions($('#set-claude-model'),options.claudeModels,settings.claudeModel);fillOptions($('#set-image-model'),options.imageModels,settings.imageModel);fillOptions($('#set-image-quality'),options.imageQualities,settings.imageQuality);
+ fillCodexModels(settingsInfo);
  $('#set-openai-key').value='';showKeyStatus(openai);$('#text-status').textContent='';$('#image-status').textContent='';settingsVisibility();$('#settings-modal').showModal();});
 $('#set-text-provider').onchange=$('#set-image-provider').onchange=settingsVisibility;
+$('#change-analysis-model').onclick=()=>$('#ai-settings').click();
 $('#settings-cancel').onclick=()=>$('#settings-modal').close();
 $('#clear-openai-key').onclick=()=>action(async()=>{const r=await api('settings','PUT',{clearOpenaiKey:true});showKeyStatus(r.openai);});
 $('#settings-form').onsubmit=e=>{e.preventDefault();action(async()=>{const button=e.submitter;button.disabled=true;
- try{await api('settings','PUT',{textProvider:$('#set-text-provider').value,claudeModel:$('#set-claude-model').value,imageProvider:$('#set-image-provider').value,imageModel:$('#set-image-model').value,imageQuality:$('#set-image-quality').value,openaiApiKey:$('#set-openai-key').value});
+ try{await api('settings','PUT',{textProvider:$('#set-text-provider').value,codexModel:$('#set-codex-model').value==='__custom'?$('#set-codex-model-custom').value.trim():$('#set-codex-model').value,claudeModel:$('#set-claude-model').value,imageProvider:$('#set-image-provider').value,imageModel:$('#set-image-model').value,imageQuality:$('#set-image-quality').value,openaiApiKey:$('#set-openai-key').value});
   $('#set-openai-key').value='';$('#text-status').textContent='연결 확인 중…';const status=await checkStatus();
   $('#text-status').textContent=status.text.ready?'✓ 장면 분석 연결됨':status.text.message;$('#image-status').textContent=status.image.ready?'✓ 이미지 생성 준비됨':status.image.message;
   if(status.ready){$('#settings-modal').close();notice('AI 설정을 저장했습니다.');}}

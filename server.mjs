@@ -8,23 +8,28 @@ import {CLAUDE_MODELS,claudeAuthStatus,analyzeWithClaude,claudeLogin} from './li
 import {IMAGE_MODELS,IMAGE_QUALITIES,generateWithOpenAI} from './lib/openai-image.mjs';
 import {parseRepo,syncSource} from './lib/presets.mjs';
 import {REFERENCE_FOLDER,migrateReferences,portableReferencePath,resolveProjectReferences,resolveStyleReferences} from './lib/references.mjs';
+import {codexModelCatalog,effectiveCodexModel,requireCodexModel} from './lib/codex-models.mjs';
+import {composeCharacterSheet,SHEET_SOURCE,SHEET_TEMPLATE} from './lib/character-sheet.mjs';
 const ROOT=path.dirname(fileURLToPath(import.meta.url)),DATA=path.resolve(process.env.SCENE_DATA_DIR||path.join(ROOT,'data')),PORT=Number(process.env.PORT||4317);
 const REFERENCE_DIR=path.resolve(process.env.SCENE_REFERENCE_DIR||path.join(ROOT,REFERENCE_FOLDER));
 await mkdir(DATA,{recursive:true});
 let db;try{db=JSON.parse(await readFile(path.join(DATA,'state.json'),'utf8'));}catch(e){if(e.code!=='ENOENT')throw e;db={projects:[],presets:[],sources:[],favorites:[]};}
-const DEFAULT_SETTINGS={textProvider:'codex',claudeModel:'sonnet',imageProvider:'codex',imageModel:IMAGE_MODELS[0],imageQuality:'auto'};
+const DEFAULT_SETTINGS={textProvider:'codex',codexModel:'',claudeModel:'sonnet',imageProvider:'codex',imageModel:IMAGE_MODELS[0],imageQuality:'auto'};
 db.settings={...DEFAULT_SETTINGS,...db.settings};
 // The API key lives outside state.json so /api/state and project exports never contain it.
 const SECRETS=path.join(DATA,'secrets.json');let secrets={};try{secrets=JSON.parse(await readFile(SECRETS,'utf8'));}catch(e){if(e.code!=='ENOENT')throw e;}
 async function saveSecrets(){await writeFile(SECRETS+'.tmp',JSON.stringify(secrets),{mode:0o600});await rename(SECRETS+'.tmp',SECRETS);}
 const openaiKey=()=>secrets.openaiApiKey||process.env.OPENAI_API_KEY||'';
 const openaiStatus=()=>{const key=openaiKey();return {configured:!!key,source:secrets.openaiApiKey?'saved':key?'env':null,last4:key?key.slice(-4):''};};
-const engineLabel=s=>s.imageProvider==='openai'?s.imageModel:'codex';
 const beforeMigration=JSON.stringify(db,null,2);
 const migration=await migrateReferences(db,{dataDir:DATA,referenceDir:REFERENCE_DIR});
 if(migration.changed){await mkdir(path.join(DATA,'backups'),{recursive:true});await writeFile(path.join(DATA,'backups',`reference-paths-${Date.now()}-${id()}.json`),beforeMigration);}
 if(migration.missing.length)console.warn(`참고 이미지 파일을 찾을 수 없습니다: ${migration.missing.join(', ')}. 참고이미지 폴더를 확인해 주세요.`);
-for(const p of db.projects){p.analyzing=false;for(const s of p.scenes)if(['queued','running','retrying'].includes(s.status)){s.status='failed';s.error='앱이 종료되어 작업이 중단되었습니다. 재생성해 주세요.';}}
+for(const p of db.projects){
+ if(p.analyzing&&p.analysisRun){p.analysisRun.status='failed';p.analysisError='앱이 종료되어 분석이 중단되었습니다. 다시 분석해 주세요.';}p.analyzing=false;
+ for(const s of p.scenes)if(['queued','running','retrying'].includes(s.status)){s.status='failed';s.error='앱이 종료되어 작업이 중단되었습니다. 재생성해 주세요.';}
+ for(const c of p.characters)if(['queued','running','retrying'].includes(c.sheetJob?.status)){c.sheetJob.status='failed';c.sheetJob.error='앱이 종료되어 시트 생성이 중단되었습니다. 다시 생성해 주세요.';}
+}
 let writes=Promise.resolve();function save(){const value=JSON.stringify(db,null,2);writes=writes.catch(()=>{}).then(async()=>{await writeFile(path.join(DATA,'state.tmp'),value);await rename(path.join(DATA,'state.tmp'),path.join(DATA,'state.json'));});return writes;}await save();
 function editedScenes(p, scenes, script) {
  const valid=validateScenes(scenes,script,p.characters);
@@ -41,11 +46,41 @@ const scenePrompt=async(p,s)=>{
  const selectedStyle=await resolveStyleReferences(db.presets.find(style=>style.id===styleId),REFERENCE_DIR);
  return composePrompt(await resolveProjectReferences({...p,characters:p.characters.filter(c=>s.characterIds.includes(c.id))},REFERENCE_DIR),s,selectedStyle?[selectedStyle]:db.presets);
 };
-const busy=p=>p.analyzing||p.scenes.some(s=>queue.keys.has(`${p.id}/${s.id}`));
+const busy=p=>p.analyzing||[...queue.keys].some(key=>key.startsWith(p.id+'/'));
 const usesStyle=(p,styleId)=>p.defaultStyleId===styleId||p.scenes.some(s=>s.styleId===styleId);
 function invalidateStyle(styleId){for(const p of db.projects)for(const s of p.scenes)if((s.styleId===null?p.defaultStyleId:s.styleId)===styleId)s.status='draft';}
 function invalidateCharacter(p,characterId){for(const s of p.scenes)if(s.characterIds.includes(characterId))s.status='draft';}
-const queue=new Queue({limit:3,retries:2,run:async task=>{const r=task.engine?.provider==='openai'?await generateWithOpenAI({...task,...task.engine,apiKey:openaiKey()}):await generate(task);const filename=`${id()}.${r.ext}`;await mkdir(path.join(DATA,'images'),{recursive:true});await writeFile(path.join(DATA,'images',filename),r.data);return {url:`/media/images/${filename}`,createdAt:new Date().toISOString(),prompt:task.prompt,style:task.style,engine:task.engine?.provider==='openai'?task.engine.model:'codex'};},onChange:async(key,status,info)=>{const [pid,sid]=key.split('/');const s=project(pid).scenes.find(s=>s.id===sid);s.status=status;s.attempts=info.attempt;s.error=info.error||'';if(info.result)s.images.push(info.result);await save();}});
+const queue=new Queue({limit:3,retries:2,run:async task=>{
+ const r=task.engine.provider==='openai'?await generateWithOpenAI({...task,...task.engine,apiKey:task.apiKey}):await generate({...task,model:task.engine.codexModel});
+ const metadata={createdAt:new Date().toISOString(),prompt:task.prompt,style:task.style,engine:task.engine.provider==='openai'?task.engine.model:'codex',...(task.engine.codexModel?{controllerModel:task.engine.codexModel}:{})};
+ if(task.kind==='character-sheet')return storeReference({displayName:`${task.characterName} 캐릭터 시트.${r.ext}`,...r},{kind:'character-sheet',...metadata,source:task.source});
+ const filename=`${id()}.${r.ext}`;await mkdir(path.join(DATA,'images'),{recursive:true});await writeFile(path.join(DATA,'images',filename),r.data);return {url:`/media/images/${filename}`,...metadata};
+},onChange:async(key,status,info)=>{
+ const [pid,sid,cid]=key.split('/'),p=project(pid);
+ if(sid==='sheet'){
+  const c=p.characters.find(c=>c.id===cid);Object.assign(c.sheetJob,{status,attempts:info.attempt,error:info.error||''});
+  if(['done','failed'].includes(status))c.sheetJob.completedAt=new Date().toISOString();
+  if(info.result){c.references.push(info.result);c.sheetJob.referenceId=info.result.id;invalidateCharacter(p,c.id);}
+ }else{
+  const s=p.scenes.find(s=>s.id===sid);s.status=status;s.attempts=info.attempt;s.error=info.error||'';if(info.result)s.images.push(info.result);
+ }
+ await save();
+}});
+async function imageEngine(settings){return {provider:settings.imageProvider,model:settings.imageModel,quality:settings.imageQuality,...(settings.imageProvider==='codex'?{codexModel:(await requireCodexModel(settings)).model}:{})};}
+async function sheetPrompt(p,c,b){
+ const resolved=await resolveProjectReferences({...p,characters:[c]},REFERENCE_DIR);
+ const selectedStyle=b.useProjectStyle===false?null:await resolveStyleReferences(db.presets.find(s=>s.id===p.defaultStyleId),REFERENCE_DIR);
+ return composeCharacterSheet(p,resolved.characters[0],selectedStyle,{stylePrompt:str(b.stylePrompt||'',20000)});
+}
+function characterInput(b,previous){
+ const name=str(b.name??previous?.name??'',100).trim(),description=str(b.description??previous?.description??'',10000);
+ if(!name)throw Error('캐릭터 이름이 필요합니다.');
+ const existing=previous?.references||[],keep=b.referenceIds??existing.map(r=>r.id),images=b.images||[];
+ if(!Array.isArray(keep)||new Set(keep).size!==keep.length||keep.some(key=>!existing.some(r=>r.id===key)))throw Error('캐릭터 참고 이미지 선택이 올바르지 않습니다.');
+ if(!Array.isArray(images)||keep.length+images.length>10)throw Error('시트와 참고 이미지 합계는 캐릭터당 최대 10장입니다.');
+ const uploads=images.map(input=>{const kind=input.kind||'character-sheet';if(!['reference','character-sheet'].includes(kind))throw Error('참고 이미지 종류가 올바르지 않습니다.');return {...uploadedImage(input),kind};});
+ return {name,description,references:keep.map(key=>existing.find(r=>r.id===key)),uploads};
+}
 function str(v,max=100000){if(typeof v!=='string'||v.length>max)throw Error('텍스트 값 또는 길이가 올바르지 않습니다.');return v;}
 function style(v){if(v!==null&&v!==''&&!db.presets.some(p=>p.id===v))throw Error('존재하지 않는 스타일입니다.');return v;}
 function uploadedImage(input){const displayName=str(input.name,200);const data=Buffer.from(str(input.base64,44e6),'base64');const ext=imageType(data);if(!ext||data.length>32e6)throw Error('PNG/JPEG/WebP 파일만 지원합니다 (최대 32MB).');return {displayName,data,ext};}
@@ -54,20 +89,24 @@ async function body(req){let b='';for await(const c of req){b+=c;if(b.length>45e
 function send(res,status,data,type='application/json'){res.writeHead(status,{'Content-Type':type,'X-Content-Type-Options':'nosniff','Cache-Control':'no-store','Content-Security-Policy':"default-src 'self'; img-src 'self' blob: https:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'"});res.end(type==='application/json'?JSON.stringify(data):data);}
 const syncs=new Set();
 async function api(req,res,url){const b=req.method==='GET'?{}:await body(req);const parts=url.pathname.split('/').filter(Boolean).map(part=>decodeURIComponent(part));const [,resource,pid,action,sid]=parts;
- if(resource==='health'&&req.method==='GET')return send(res,200,{application:'scene-studio',root:ROOT});
+ if(resource==='health'&&req.method==='GET')return send(res,200,{application:'scene-studio',version:'1.1.0',root:ROOT});
  if(resource==='status'){
   const settings=db.settings,useCodex=settings.textProvider==='codex'||settings.imageProvider==='codex';
-  const [codex,claude]=await Promise.all([useCodex?authStatus():null,settings.textProvider==='claude'?claudeAuthStatus():null]);if(claude)claude.login=claudeLogin.state();if(codex){codex.login=codexLogin.state();if(!codex.ready)codex.message+='\n[ChatGPT 로그인] 버튼을 눌러 로그인해 주세요.';}const openai=openaiStatus();
+  const [codex,claude,catalog]=await Promise.all([useCodex?authStatus():null,settings.textProvider==='claude'?claudeAuthStatus():null,useCodex?codexModelCatalog():{models:[],error:''}]);if(claude)claude.login=claudeLogin.state();if(codex){codex.login=codexLogin.state();if(!codex.ready)codex.message+='\n[ChatGPT 로그인] 버튼을 눌러 로그인해 주세요.';}const openai=openaiStatus();
+  const gpt=effectiveCodexModel(settings,catalog),textModel=settings.textProvider==='claude'?settings.claudeModel:gpt.model;
   const text=settings.textProvider==='claude'?claude:codex,image=settings.imageProvider==='openai'?{ready:openai.configured,message:openai.configured?'':'OpenAI API 키가 없습니다. AI 설정에서 키를 입력해 주세요.'}:codex;
-  return send(res,200,{ready:text.ready&&image.ready,message:[...new Set([text,image].filter(x=>!x.ready).map(x=>x.message))].join('\n'),text,image,codex,claude,openai,settings,queue:{active:queue.active,pending:queue.pending.length},imageModel:settings.imageProvider==='openai'?`${settings.imageModel} (OpenAI API, 품질 ${settings.imageQuality})`:'Codex 공식 이미지 도구 자동 선택 (직접 지정 불가)'});
+  const modelReady=!useCodex||!!gpt.model;
+  return send(res,200,{ready:text.ready&&image.ready&&modelReady,message:[...new Set([... [text,image].filter(x=>!x.ready).map(x=>x.message),...(!modelReady?[gpt.error]:[])])].join('\n'),text,image,codex,claude,openai,settings,textModel,codexModel:gpt,queue:{active:queue.active,pending:queue.pending.length},imageModel:settings.imageProvider==='openai'?`${settings.imageModel} (OpenAI API, 품질 ${settings.imageQuality})`:'Codex 공식 이미지 도구 자동 선택 (직접 지정 불가)'});
  }
  if(resource==='login'&&req.method==='POST'){const login={codex:codexLogin,claude:claudeLogin}[pid];if(!login)throw Error('알 수 없는 로그인 서비스입니다.');
   if(action==='code'){const code=str(b.code,2000);if(!code.trim())throw Error('인증 코드를 입력해 주세요.');return send(res,200,login.submitCode(code));}
   return send(res,202,login.start());}
- if(resource==='settings'&&req.method==='GET')return send(res,200,{settings:db.settings,openai:openaiStatus(),options:{claudeModels:CLAUDE_MODELS,imageModels:IMAGE_MODELS,imageQualities:IMAGE_QUALITIES}});
+ if(resource==='settings'&&req.method==='GET'){const catalog=await codexModelCatalog({refresh:url.searchParams.get('refreshModels')==='1'});return send(res,200,{settings:db.settings,openai:openaiStatus(),codexModel:effectiveCodexModel(db.settings,catalog),defaultCodexModel:effectiveCodexModel({codexModel:''},catalog),modelCatalogError:catalog.error,options:{codexModels:catalog.models,claudeModels:CLAUDE_MODELS,imageModels:IMAGE_MODELS,imageQualities:IMAGE_QUALITIES}});}
+ if(resource==='character-sheet-template'&&req.method==='GET')return send(res,200,{source:SHEET_SOURCE,prompt:SHEET_TEMPLATE});
  if(resource==='settings'&&req.method==='PUT'){
   const allowed={textProvider:['codex','claude'],claudeModel:CLAUDE_MODELS,imageProvider:['codex','openai'],imageModel:IMAGE_MODELS,imageQuality:IMAGE_QUALITIES};const next={...db.settings};
   for(const [k,values] of Object.entries(allowed))if(k in b){if(!values.includes(b[k]))throw Error(`지원하지 않는 설정 값입니다: ${k}`);next[k]=b[k];}
+  if('codexModel'in b){const value=str(b.codexModel,120).trim();if(value&&!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value))throw Error('GPT 모델 ID 형식이 올바르지 않습니다.');next.codexModel=value;}
   const nextSecrets={...secrets};if(b.clearOpenaiKey)delete nextSecrets.openaiApiKey;
   else if(typeof b.openaiApiKey==='string'&&b.openaiApiKey.trim()){const key=b.openaiApiKey.trim();if(!/^\S{20,300}$/.test(key))throw Error('OpenAI API 키 형식이 올바르지 않습니다.');nextSecrets.openaiApiKey=key;}
   if(next.imageProvider==='openai'&&!(nextSecrets.openaiApiKey||process.env.OPENAI_API_KEY))throw Error('OpenAI API 이미지 생성을 사용하려면 API 키를 입력해 주세요.');
@@ -101,14 +140,57 @@ async function api(req,res,url){const b=req.method==='GET'?{}:await body(req);co
  if(resource==='projects'&&req.method==='POST'&&!pid){const p={id:id(),name:str(b.name||'새 프로젝트',200),script:'',constraints:'',aspectRatio:'16:9',defaultStyleId:'',characters:[],scenes:[],createdAt:new Date().toISOString()};db.projects.push(p);await save();return send(res,201,p);}
  if(resource==='projects'&&pid){const p=project(pid);
   if(req.method==='PUT'&&!action){if(busy(p))throw Error('작업이 진행 중입니다. 완료 후 편집해 주세요.');const changes={};for(const k of ['name','script','constraints'])if(k in b)changes[k]=str(b[k]);if('defaultStyleId'in b)changes.defaultStyleId=style(b.defaultStyleId);if('aspectRatio'in b){if(!['16:9','9:16','1:1','4:3'].includes(b.aspectRatio))throw Error('화면 비율 오류');changes.aspectRatio=b.aspectRatio;}if('scenes'in b)changes.scenes=editedScenes(p,b.scenes,changes.script??p.script);if(['constraints','aspectRatio','defaultStyleId'].some(k=>k in changes&&changes[k]!==p[k])){changes.scenes=(changes.scenes||p.scenes).map(s=>({...s,status:'draft'}));}Object.assign(p,changes);await save();return send(res,200,p);}
-  if(action==='characters'&&req.method==='POST'){if(busy(p))throw Error('작업 완료 후 캐릭터를 수정해 주세요.');const c={id:id(),name:str(b.name,100),description:str(b.description||'',10000),references:[]};if(!c.name.trim())throw Error('캐릭터 이름이 필요합니다.');p.characters.push(c);await save();return send(res,201,c);}
+  if(action==='characters'&&req.method==='POST'){
+   if(busy(p))throw Error('작업 완료 후 캐릭터를 수정해 주세요.');const {uploads,...fields}=characterInput(b);
+   for(const upload of uploads)fields.references.push(await storeReference(upload,{kind:upload.kind}));
+   if(busy(p))throw Error('작업 완료 후 캐릭터를 수정해 주세요.');const c={id:id(),...fields};p.characters.push(c);await save();return send(res,201,c);
+  }
+  if(action==='characters'&&sid&&req.method==='PUT'){
+   if(busy(p))throw Error('작업 완료 후 캐릭터를 수정해 주세요.');const c=p.characters.find(c=>c.id===sid);if(!c)throw Error('캐릭터를 찾을 수 없습니다.');const {uploads,...fields}=characterInput(b,c);
+   for(const upload of uploads)fields.references.push(await storeReference(upload,{kind:upload.kind}));
+   if(busy(p))throw Error('작업 완료 후 캐릭터를 수정해 주세요.');Object.assign(c,fields);invalidateCharacter(p,c.id);await save();return send(res,200,c);
+  }
   if(action==='characters'&&sid&&req.method==='DELETE'){if(busy(p))throw Error('작업 중입니다.');p.characters=p.characters.filter(c=>c.id!==sid);for(const s of p.scenes)s.characterIds=s.characterIds.filter(x=>x!==sid);await save();return send(res,200,p);}
   if(action==='references'&&req.method==='POST'){if(busy(p))throw Error('작업 중입니다.');const c=p.characters.find(c=>c.id===b.characterId);if(!c)throw Error('캐릭터를 찾을 수 없습니다.');if(c.references.length>=10)throw Error('캐릭터당 레퍼런스 최대 10장');const kind=b.kind||'reference';if(!['reference','character-sheet'].includes(kind))throw Error('참고 이미지 종류가 올바르지 않습니다.');c.references.push(await storeReference(uploadedImage(b),{kind}));invalidateCharacter(p,c.id);await save();return send(res,201,c);}
   if(action==='references'&&req.method==='DELETE'){if(busy(p))throw Error('작업 중입니다.');for(const c of p.characters){if(c.references.some(r=>r.id===sid))invalidateCharacter(p,c.id);c.references=c.references.filter(r=>r.id!==sid);}await save();return send(res,200,p);}
-  if(action==='analyze'&&req.method==='POST'){if(busy(p))throw Error('이미 작업 중입니다.');if(!p.script.trim())throw Error('대본을 입력해 주세요.');p.analyzing=true;p.analysisError='';await save();send(res,202,{accepted:true});(async()=>{try{const job={project:structuredClone(p),cwd:path.join(DATA,'jobs',id())};const scenes=db.settings.textProvider==='claude'?await analyzeWithClaude({...job,model:db.settings.claudeModel}):await analyze(job);p.scenes=validateScenes(scenes,p.script,p.characters);}catch(e){p.analysisError=e.message;}finally{p.analyzing=false;await save();}})();return;}
+  if(action==='character-sheet-preview'&&req.method==='POST'){
+   const c=p.characters.find(c=>c.id===b.characterId);if(!c)throw Error('캐릭터를 찾을 수 없습니다.');
+   const description=str(b.description??c.description,10000);if(!description.trim())throw Error('만들고 싶은 캐릭터의 외형을 설명해 주세요.');
+   return send(res,200,await sheetPrompt(p,{...c,description},b));
+  }
+  if(action==='character-sheet'&&req.method==='POST'){
+   if(busy(p))throw Error('작업 완료 후 시트를 생성해 주세요.');const c=p.characters.find(c=>c.id===b.characterId);if(!c)throw Error('캐릭터를 찾을 수 없습니다.');
+   if(c.references.length>=10)throw Error('참고 이미지가 10장입니다. 한 장을 제거한 뒤 시트를 생성해 주세요.');
+   const description=str(b.description??c.description,10000);if(!description.trim())throw Error('만들고 싶은 캐릭터의 외형을 설명해 주세요.');
+   const settings={...db.settings},jobId=id(),task={...await sheetPrompt(p,{...c,description},b),engine:await imageEngine(settings),apiKey:openaiKey(),kind:'character-sheet',characterName:c.name,cwd:path.join(DATA,'jobs',jobId)};
+   if(busy(p))throw Error('이미 작업 중입니다.');if(!p.characters.includes(c))throw Error('캐릭터가 삭제되었습니다. 다시 선택해 주세요.');if(c.references.length>=10)throw Error('캐릭터당 참고 이미지는 최대 10장입니다.');
+   c.description=description;invalidateCharacter(p,c.id);c.sheetJob={id:jobId,status:'queued',attempts:0,error:'',startedAt:new Date().toISOString(),source:task.source};
+   queue.add(`${p.id}/sheet/${c.id}`,task);await save();return send(res,202,{queued:1,characterId:c.id});
+  }
+  if(action==='analyze'&&req.method==='POST'){
+   if(busy(p))throw Error('이미 작업 중입니다.');if(!p.script.trim())throw Error('대본을 입력해 주세요.');
+   const settings={...db.settings},input=structuredClone(p);p.analyzing=true;p.analysisError='';p.analysisRun={provider:settings.textProvider,model:settings.textProvider==='claude'?settings.claudeModel:settings.codexModel||'',status:'running',startedAt:new Date().toISOString()};
+   await save();send(res,202,{accepted:true});(async()=>{
+    try{
+     const model=settings.textProvider==='claude'?settings.claudeModel:(await requireCodexModel(settings)).model;
+     p.analysisRun.model=model;await save();const job={project:input,model,cwd:path.join(DATA,'jobs',id())};
+     const scenes=settings.textProvider==='claude'?await analyzeWithClaude(job):await analyze(job);
+     p.scenes=validateScenes(scenes,input.script,input.characters);p.analysisRun.status='done';
+    }catch(e){p.analysisError=e.message;p.analysisRun.status='failed';}
+    finally{p.analyzing=false;p.analysisRun.completedAt=new Date().toISOString();await save();}
+   })();return;
+  }
   if(action==='scenes'&&req.method==='PUT'){if(busy(p))throw Error('작업 중입니다.');if(!Array.isArray(b.scenes)||b.scenes.length>100)throw Error('장면 형식 오류');p.scenes=editedScenes(p,b.scenes,p.script);await save();return send(res,200,p);}
   if(action==='preview'&&req.method==='POST'){const s=p.scenes.find(s=>s.id===b.sceneId);if(!s)throw Error('장면 없음');return send(res,200,await scenePrompt(p,s));}
-  if(action==='generate'&&req.method==='POST'){if(p.analyzing)throw Error('분석 중입니다.');const selected=b.sceneIds? p.scenes.filter(s=>b.sceneIds.includes(s.id)):p.scenes.filter(s=>!s.images.length||['failed','draft'].includes(s.status));if(!selected.length)throw Error('생성할 장면이 없습니다.');const tasks=await Promise.all(selected.filter(s=>!queue.keys.has(`${p.id}/${s.id}`)).map(async s=>({s,task:{...await scenePrompt(p,s),aspectRatio:p.aspectRatio,engine:{provider:db.settings.imageProvider,model:db.settings.imageModel,quality:db.settings.imageQuality},cwd:path.join(DATA,'jobs',id())}})));const available=tasks.filter(({s})=>!queue.keys.has(`${p.id}/${s.id}`));for(const {s,task}of available){s.status='queued';s.error='';queue.add(`${p.id}/${s.id}`,task);}await save();return send(res,202,{queued:available.length});}
+  if(action==='generate'&&req.method==='POST'){
+   if(p.analyzing)throw Error('분석 중입니다.');if(p.characters.some(c=>['queued','running','retrying'].includes(c.sheetJob?.status)))throw Error('캐릭터 시트 생성 완료 후 장면을 생성해 주세요.');
+   const selected=b.sceneIds?p.scenes.filter(s=>b.sceneIds.includes(s.id)):p.scenes.filter(s=>!s.images.length||['failed','draft'].includes(s.status));if(!selected.length)throw Error('생성할 장면이 없습니다.');
+   const settings={...db.settings},apiKey=openaiKey();
+   const tasks=await Promise.all(selected.filter(s=>!queue.keys.has(`${p.id}/${s.id}`)).map(async s=>({s,task:{...await scenePrompt(p,s),aspectRatio:p.aspectRatio,cwd:path.join(DATA,'jobs',id())}})));
+   if(!tasks.length)return send(res,202,{queued:0});const engine=await imageEngine(settings);for(const {task}of tasks)Object.assign(task,{engine,apiKey});
+   if(p.analyzing||p.characters.some(c=>['queued','running','retrying'].includes(c.sheetJob?.status)))throw Error('다른 작업이 시작되었습니다. 완료 후 생성해 주세요.');
+   const available=tasks.filter(({s})=>!queue.keys.has(`${p.id}/${s.id}`));for(const {s,task}of available){s.status='queued';s.error='';queue.add(`${p.id}/${s.id}`,task);}await save();return send(res,202,{queued:available.length});
+  }
   if(action==='export'&&req.method==='GET'){res.setHeader('Content-Disposition',`attachment; filename="project-${p.id}.json"`);return send(res,200,p);}
  }
  if(resource==='sources'&&req.method==='POST'&&!pid){parseRepo(b.url);if(db.sources.some(s=>s.url===b.url&&s.ref===(b.ref||'')))throw Error('이미 등록된 저장소입니다.');const s={id:id(),url:str(b.url,500),ref:str(b.ref||'',200),warnings:[]};db.sources.push(s);await save();return send(res,201,s);}

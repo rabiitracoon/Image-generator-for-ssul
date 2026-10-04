@@ -24,3 +24,46 @@
 @media(max-width:760px){.custom-style-grid{grid-template-columns:1fr;gap:15px}.custom-style-heading{flex-wrap:wrap}.custom-style-actions{align-items:stretch}.custom-style-actions>span{flex-basis:100%}.custom-style-actions>button{flex:1;font-size:11px}.character-uploads{flex-direction:column}}
 #settings-modal{max-width:560px}#settings-modal fieldset{border:1px solid var(--line);border-radius:9px;padding:6px 18px 10px;margin:18px 0}#settings-modal legend{font-size:11px;font-weight:650;color:#4d6847;padding:0 6px}#settings-modal label{display:block;margin:14px 0;font-size:12px;font-weight:600}#settings-modal code{font-size:11px;background:#eef2ea;padding:1px 5px;border-radius:4px}#settings-modal .text-button{display:inline;margin-left:8px;color:#a65e4c}#text-status:empty,#image-status:empty{display:none}
 .aside-bottom .login-button{display:block;margin:8px 0 0;padding:6px 10px;font-size:11px}.login-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:10px 0}.login-row .hint a{color:#496342}.login-code{display:flex;gap:8px;width:100%}.login-code input{margin:0}
+.character-heading-actions{flex-wrap:wrap;justify-content:flex-end}
+.character-head>div{display:flex;gap:6px}
+.character-head button[data-edit-char]{font-size:11px;border:1px solid var(--line);color:var(--green)}
+.characters{grid-template-columns:repeat(auto-fit,minmax(290px,1fr))}
+.characters>.empty{grid-column:1/-1}
+.refs .reference-view{position:relative;display:block;padding:0;border:0;width:96px;height:88px;overflow:hidden;border-radius:7px;background:#edf1e9}
+.refs .reference-view img{width:96px;height:88px;object-fit:contain}
+.refs .ref>button[data-delete-ref]{top:3px;right:3px;background:#fff}
+.character-sheet-button{margin-top:10px}
+.sheet-job{margin-top:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.sheet-job .error-text{flex-basis:100%;color:#a65e4c;overflow-wrap:anywhere}
+#character-modal,#sheet-modal{max-width:650px}
+#character-modal label,#sheet-modal label{display:block;font-size:12px;font-weight:600;margin:18px 0}
+#character-description,#sheet-description{min-height:120px}
+#sheet-style-prompt{min-height:65px}
+.character-file-row{display:flex;gap:12px;align-items:center}
+.character-file-row>select{width:150px;margin:0}
+.character-file-row>.upload{flex:1;margin:0!important}
+.character-draft-images{display:flex;gap:12px;flex-wrap:wrap;margin-top:18px}
+.character-draft-image{position:relative;width:120px}
+.character-draft-image>.preview-visual{width:120px;height:95px;border:1px solid var(--line);border-radius:7px}
+.character-draft-image img{object-fit:contain}
+.character-draft-image>span{display:block;font-size:10px;color:var(--green);margin-top:5px}
+.character-draft-image>button{position:absolute;top:4px;right:4px;padding:2px 6px;background:#fff}
+.form-status{color:#a65e4c;white-space:pre-wrap}
+.form-status:empty{display:none}
+#sheet-modal .sheet-style-choice{display:flex;gap:8px;align-items:center;font-weight:400}
+.sheet-style-choice input{width:auto;margin:0}
+#sheet-modal a{color:var(--green)}
+#sheet-modal summary{font-size:12px;cursor:pointer;margin:16px 0}
+#sheet-prompt-preview{max-height:260px;overflow:auto;background:#f4f7f1;border-radius:6px;padding:12px}
+#sheet-prompt-preview:empty{display:none}
+#reference-modal{max-width:1000px}
+#reference-image{display:block;max-width:100%;max-height:65dvh;object-fit:contain;margin:18px auto}
+.analysis-model{display:flex;gap:10px;flex-wrap:wrap;align-items:center;padding-top:12px;color:#56764f;font-size:11px}
+.analysis-model small{flex-basis:100%;font-size:10px;color:#879480}
+.analysis-model small:empty{display:none}
+.model-catalog-row{display:flex;gap:10px;align-items:flex-start;justify-content:space-between}
+.model-catalog-row .hint{overflow-wrap:anywhere}
+#engine-summary{white-space:pre-line;overflow-wrap:anywhere}
+#settings-modal{max-height:92dvh}
+@media(max-width:1000px){.character-heading-actions{gap:8px}.section-heading{flex-wrap:wrap}}
+@media(max-width:760px){.character-file-row{flex-direction:column;align-items:stretch}.character-file-row>select{width:100%}#character-modal .dialog-actions{flex-wrap:wrap}.characters{grid-template-columns:1fr}.character-heading-actions{justify-content:flex-start}}
