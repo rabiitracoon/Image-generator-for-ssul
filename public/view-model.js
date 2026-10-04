@@ -1,3 +1,13 @@
+const activeStatuses=['queued','running','retrying'];
+export const jobActive=status=>activeStatuses.includes(status);
+export const sceneWorkActive=project=>!!project&&(!!project.analyzing||project.scenes.some(s=>jobActive(s.status)));
+export const characterLocked=(project,character)=>sceneWorkActive(project)||jobActive(character?.sheetJob?.status);
+export const projectLocked=project=>sceneWorkActive(project)||!!project?.characters.some(c=>jobActive(c.sheetJob?.status));
+export function sheetProgress(project){
+  const jobs=(project?.characters||[]).map(c=>c.sheetJob?.status);
+  const running=jobs.filter(status=>status==='running'||status==='retrying').length,queued=jobs.filter(status=>status==='queued').length;
+  return `${running}개 생성 중 · ${queued}개 대기 · 최대 3개 동시 생성`;
+}
 export function filterScenes(scenes, query='', status='all') {
   const needle=query.trim().toLocaleLowerCase();
   return scenes.filter(s=>{

@@ -46,7 +46,12 @@ const scenePrompt=async(p,s)=>{
  const selectedStyle=await resolveStyleReferences(db.presets.find(style=>style.id===styleId),REFERENCE_DIR);
  return composePrompt(await resolveProjectReferences({...p,characters:p.characters.filter(c=>s.characterIds.includes(c.id))},REFERENCE_DIR),s,selectedStyle?[selectedStyle]:db.presets);
 };
-const busy=p=>p.analyzing||[...queue.keys].some(key=>key.startsWith(p.id+'/'));
+const preparingSheets=new Set();
+const sheetKey=(p,c)=>`${p.id}/sheet/${c.id}`;
+const sceneBusy=p=>p.analyzing||[...queue.keys].some(key=>key.startsWith(p.id+'/')&&!key.startsWith(p.id+'/sheet/'));
+const sheetBusy=p=>[...queue.keys,...preparingSheets].some(key=>key.startsWith(p.id+'/sheet/'));
+const busy=p=>sceneBusy(p)||sheetBusy(p);
+const characterBusy=(p,c)=>sceneBusy(p)||!!c&&(queue.keys.has(sheetKey(p,c))||preparingSheets.has(sheetKey(p,c)));
 const usesStyle=(p,styleId)=>p.defaultStyleId===styleId||p.scenes.some(s=>s.styleId===styleId);
 function invalidateStyle(styleId){for(const p of db.projects)for(const s of p.scenes)if((s.styleId===null?p.defaultStyleId:s.styleId)===styleId)s.status='draft';}
 function invalidateCharacter(p,characterId){for(const s of p.scenes)if(s.characterIds.includes(characterId))s.status='draft';}
@@ -89,7 +94,7 @@ async function body(req){let b='';for await(const c of req){b+=c;if(b.length>45e
 function send(res,status,data,type='application/json'){res.writeHead(status,{'Content-Type':type,'X-Content-Type-Options':'nosniff','Cache-Control':'no-store','Content-Security-Policy':"default-src 'self'; img-src 'self' blob: https:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'"});res.end(type==='application/json'?JSON.stringify(data):data);}
 const syncs=new Set();
 async function api(req,res,url){const b=req.method==='GET'?{}:await body(req);const parts=url.pathname.split('/').filter(Boolean).map(part=>decodeURIComponent(part));const [,resource,pid,action,sid]=parts;
- if(resource==='health'&&req.method==='GET')return send(res,200,{application:'scene-studio',version:'1.1.0',root:ROOT});
+ if(resource==='health'&&req.method==='GET')return send(res,200,{application:'scene-studio',version:'1.1.1',root:ROOT});
  if(resource==='status'){
   const settings=db.settings,useCodex=settings.textProvider==='codex'||settings.imageProvider==='codex';
   const [codex,claude,catalog]=await Promise.all([useCodex?authStatus():null,settings.textProvider==='claude'?claudeAuthStatus():null,useCodex?codexModelCatalog():{models:[],error:''}]);if(claude)claude.login=claudeLogin.state();if(codex){codex.login=codexLogin.state();if(!codex.ready)codex.message+='\n[ChatGPT 로그인] 버튼을 눌러 로그인해 주세요.';}const openai=openaiStatus();
@@ -141,31 +146,40 @@ async function api(req,res,url){const b=req.method==='GET'?{}:await body(req);co
  if(resource==='projects'&&pid){const p=project(pid);
   if(req.method==='PUT'&&!action){if(busy(p))throw Error('작업이 진행 중입니다. 완료 후 편집해 주세요.');const changes={};for(const k of ['name','script','constraints'])if(k in b)changes[k]=str(b[k]);if('defaultStyleId'in b)changes.defaultStyleId=style(b.defaultStyleId);if('aspectRatio'in b){if(!['16:9','9:16','1:1','4:3'].includes(b.aspectRatio))throw Error('화면 비율 오류');changes.aspectRatio=b.aspectRatio;}if('scenes'in b)changes.scenes=editedScenes(p,b.scenes,changes.script??p.script);if(['constraints','aspectRatio','defaultStyleId'].some(k=>k in changes&&changes[k]!==p[k])){changes.scenes=(changes.scenes||p.scenes).map(s=>({...s,status:'draft'}));}Object.assign(p,changes);await save();return send(res,200,p);}
   if(action==='characters'&&req.method==='POST'){
-   if(busy(p))throw Error('작업 완료 후 캐릭터를 수정해 주세요.');const {uploads,...fields}=characterInput(b);
+   if(characterBusy(p))throw Error('장면 생성 또는 분석 완료 후 캐릭터를 추가해 주세요.');const {uploads,...fields}=characterInput(b);
    for(const upload of uploads)fields.references.push(await storeReference(upload,{kind:upload.kind}));
-   if(busy(p))throw Error('작업 완료 후 캐릭터를 수정해 주세요.');const c={id:id(),...fields};p.characters.push(c);await save();return send(res,201,c);
+   if(characterBusy(p))throw Error('장면 생성 또는 분석 완료 후 캐릭터를 추가해 주세요.');const c={id:id(),...fields};p.characters.push(c);await save();return send(res,201,c);
   }
   if(action==='characters'&&sid&&req.method==='PUT'){
-   if(busy(p))throw Error('작업 완료 후 캐릭터를 수정해 주세요.');const c=p.characters.find(c=>c.id===sid);if(!c)throw Error('캐릭터를 찾을 수 없습니다.');const {uploads,...fields}=characterInput(b,c);
+   const c=p.characters.find(c=>c.id===sid);if(!c)throw Error('캐릭터를 찾을 수 없습니다.');if(characterBusy(p,c))throw Error('이 캐릭터의 시트 생성 또는 장면 작업 완료 후 수정해 주세요.');const {uploads,...fields}=characterInput(b,c);
    for(const upload of uploads)fields.references.push(await storeReference(upload,{kind:upload.kind}));
-   if(busy(p))throw Error('작업 완료 후 캐릭터를 수정해 주세요.');Object.assign(c,fields);invalidateCharacter(p,c.id);await save();return send(res,200,c);
+   if(characterBusy(p,c))throw Error('이 캐릭터의 시트 생성 또는 장면 작업 완료 후 수정해 주세요.');if(!p.characters.includes(c))throw Error('캐릭터가 삭제되었습니다. 다시 선택해 주세요.');Object.assign(c,fields);invalidateCharacter(p,c.id);await save();return send(res,200,c);
   }
-  if(action==='characters'&&sid&&req.method==='DELETE'){if(busy(p))throw Error('작업 중입니다.');p.characters=p.characters.filter(c=>c.id!==sid);for(const s of p.scenes)s.characterIds=s.characterIds.filter(x=>x!==sid);await save();return send(res,200,p);}
-  if(action==='references'&&req.method==='POST'){if(busy(p))throw Error('작업 중입니다.');const c=p.characters.find(c=>c.id===b.characterId);if(!c)throw Error('캐릭터를 찾을 수 없습니다.');if(c.references.length>=10)throw Error('캐릭터당 레퍼런스 최대 10장');const kind=b.kind||'reference';if(!['reference','character-sheet'].includes(kind))throw Error('참고 이미지 종류가 올바르지 않습니다.');c.references.push(await storeReference(uploadedImage(b),{kind}));invalidateCharacter(p,c.id);await save();return send(res,201,c);}
-  if(action==='references'&&req.method==='DELETE'){if(busy(p))throw Error('작업 중입니다.');for(const c of p.characters){if(c.references.some(r=>r.id===sid))invalidateCharacter(p,c.id);c.references=c.references.filter(r=>r.id!==sid);}await save();return send(res,200,p);}
+  if(action==='characters'&&sid&&req.method==='DELETE'){const c=p.characters.find(c=>c.id===sid);if(characterBusy(p,c))throw Error('이 캐릭터의 시트 생성 또는 장면 작업 완료 후 삭제해 주세요.');p.characters=p.characters.filter(c=>c.id!==sid);for(const s of p.scenes)s.characterIds=s.characterIds.filter(x=>x!==sid);await save();return send(res,200,p);}
+  if(action==='references'&&req.method==='POST'){
+   const c=p.characters.find(c=>c.id===b.characterId);if(!c)throw Error('캐릭터를 찾을 수 없습니다.');if(characterBusy(p,c))throw Error('이 캐릭터의 시트 생성 또는 장면 작업 완료 후 첨부해 주세요.');if(c.references.length>=10)throw Error('캐릭터당 레퍼런스 최대 10장');
+   const kind=b.kind||'reference';if(!['reference','character-sheet'].includes(kind))throw Error('참고 이미지 종류가 올바르지 않습니다.');const reference=await storeReference(uploadedImage(b),{kind});
+   if(characterBusy(p,c))throw Error('이 캐릭터의 시트 생성 또는 장면 작업 완료 후 첨부해 주세요.');if(!p.characters.includes(c))throw Error('캐릭터가 삭제되었습니다. 다시 선택해 주세요.');if(c.references.length>=10)throw Error('캐릭터당 레퍼런스 최대 10장');
+   c.references.push(reference);invalidateCharacter(p,c.id);await save();return send(res,201,c);
+  }
+  if(action==='references'&&req.method==='DELETE'){const owners=p.characters.filter(c=>c.references.some(r=>r.id===sid));if(characterBusy(p)||owners.some(c=>characterBusy(p,c)))throw Error('이 캐릭터의 시트 생성 또는 장면 작업 완료 후 삭제해 주세요.');for(const c of owners){invalidateCharacter(p,c.id);c.references=c.references.filter(r=>r.id!==sid);}await save();return send(res,200,p);}
   if(action==='character-sheet-preview'&&req.method==='POST'){
    const c=p.characters.find(c=>c.id===b.characterId);if(!c)throw Error('캐릭터를 찾을 수 없습니다.');
    const description=str(b.description??c.description,10000);if(!description.trim())throw Error('만들고 싶은 캐릭터의 외형을 설명해 주세요.');
    return send(res,200,await sheetPrompt(p,{...c,description},b));
   }
   if(action==='character-sheet'&&req.method==='POST'){
-   if(busy(p))throw Error('작업 완료 후 시트를 생성해 주세요.');const c=p.characters.find(c=>c.id===b.characterId);if(!c)throw Error('캐릭터를 찾을 수 없습니다.');
+   const c=p.characters.find(c=>c.id===b.characterId);if(!c)throw Error('캐릭터를 찾을 수 없습니다.');if(characterBusy(p,c))throw Error('이 캐릭터의 시트 생성 또는 장면 작업이 이미 진행 중입니다.');
    if(c.references.length>=10)throw Error('참고 이미지가 10장입니다. 한 장을 제거한 뒤 시트를 생성해 주세요.');
    const description=str(b.description??c.description,10000);if(!description.trim())throw Error('만들고 싶은 캐릭터의 외형을 설명해 주세요.');
-   const settings={...db.settings},jobId=id(),task={...await sheetPrompt(p,{...c,description},b),engine:await imageEngine(settings),apiKey:openaiKey(),kind:'character-sheet',characterName:c.name,cwd:path.join(DATA,'jobs',jobId)};
-   if(busy(p))throw Error('이미 작업 중입니다.');if(!p.characters.includes(c))throw Error('캐릭터가 삭제되었습니다. 다시 선택해 주세요.');if(c.references.length>=10)throw Error('캐릭터당 참고 이미지는 최대 10장입니다.');
-   c.description=description;invalidateCharacter(p,c.id);c.sheetJob={id:jobId,status:'queued',attempts:0,error:'',startedAt:new Date().toISOString(),source:task.source};
-   queue.add(`${p.id}/sheet/${c.id}`,task);await save();return send(res,202,{queued:1,characterId:c.id});
+   // Reserve this character before prompt/model preparation yields to another request.
+   const key=sheetKey(p,c),settings={...db.settings},apiKey=openaiKey(),jobId=id(),input=structuredClone(p);preparingSheets.add(key);
+   try{
+    const task={...await sheetPrompt(input,{...input.characters.find(x=>x.id===c.id),description},b),engine:await imageEngine(settings),apiKey,kind:'character-sheet',characterName:c.name,cwd:path.join(DATA,'jobs',jobId)};
+    if(sceneBusy(p)||queue.keys.has(key))throw Error('이미 작업 중입니다.');if(!p.characters.includes(c))throw Error('캐릭터가 삭제되었습니다. 다시 선택해 주세요.');if(c.references.length>=10)throw Error('캐릭터당 참고 이미지는 최대 10장입니다.');
+    c.description=description;invalidateCharacter(p,c.id);c.sheetJob={id:jobId,status:'queued',attempts:0,error:'',startedAt:new Date().toISOString(),source:task.source};
+    queue.add(key,task);await save();return send(res,202,{queued:1,characterId:c.id});
+   }finally{preparingSheets.delete(key);}
   }
   if(action==='analyze'&&req.method==='POST'){
    if(busy(p))throw Error('이미 작업 중입니다.');if(!p.script.trim())throw Error('대본을 입력해 주세요.');
@@ -183,12 +197,12 @@ async function api(req,res,url){const b=req.method==='GET'?{}:await body(req);co
   if(action==='scenes'&&req.method==='PUT'){if(busy(p))throw Error('작업 중입니다.');if(!Array.isArray(b.scenes)||b.scenes.length>100)throw Error('장면 형식 오류');p.scenes=editedScenes(p,b.scenes,p.script);await save();return send(res,200,p);}
   if(action==='preview'&&req.method==='POST'){const s=p.scenes.find(s=>s.id===b.sceneId);if(!s)throw Error('장면 없음');return send(res,200,await scenePrompt(p,s));}
   if(action==='generate'&&req.method==='POST'){
-   if(p.analyzing)throw Error('분석 중입니다.');if(p.characters.some(c=>['queued','running','retrying'].includes(c.sheetJob?.status)))throw Error('캐릭터 시트 생성 완료 후 장면을 생성해 주세요.');
+   if(p.analyzing)throw Error('분석 중입니다.');if(sheetBusy(p))throw Error('캐릭터 시트 생성 완료 후 장면을 생성해 주세요.');
    const selected=b.sceneIds?p.scenes.filter(s=>b.sceneIds.includes(s.id)):p.scenes.filter(s=>!s.images.length||['failed','draft'].includes(s.status));if(!selected.length)throw Error('생성할 장면이 없습니다.');
    const settings={...db.settings},apiKey=openaiKey();
    const tasks=await Promise.all(selected.filter(s=>!queue.keys.has(`${p.id}/${s.id}`)).map(async s=>({s,task:{...await scenePrompt(p,s),aspectRatio:p.aspectRatio,cwd:path.join(DATA,'jobs',id())}})));
    if(!tasks.length)return send(res,202,{queued:0});const engine=await imageEngine(settings);for(const {task}of tasks)Object.assign(task,{engine,apiKey});
-   if(p.analyzing||p.characters.some(c=>['queued','running','retrying'].includes(c.sheetJob?.status)))throw Error('다른 작업이 시작되었습니다. 완료 후 생성해 주세요.');
+   if(p.analyzing||sheetBusy(p))throw Error('다른 작업이 시작되었습니다. 완료 후 생성해 주세요.');
    const available=tasks.filter(({s})=>!queue.keys.has(`${p.id}/${s.id}`));for(const {s,task}of available){s.status='queued';s.error='';queue.add(`${p.id}/${s.id}`,task);}await save();return send(res,202,{queued:available.length});
   }
   if(action==='export'&&req.method==='GET'){res.setHeader('Content-Disposition',`attachment; filename="project-${p.id}.json"`);return send(res,200,p);}

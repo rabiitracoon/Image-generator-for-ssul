@@ -1,6 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { filterScenes, pageItems } from '../public/view-model.js';
+import { filterScenes, pageItems, characterLocked, projectLocked, sheetProgress } from '../public/view-model.js';
+
+test('sheet jobs lock only their own characters while scene work locks the character workspace',()=>{
+  const idle={sheetJob:{status:'done'}},running={sheetJob:{status:'running'}},queued={sheetJob:{status:'queued'}},retrying={sheetJob:{status:'retrying'}};
+  const project={characters:[idle,running,queued,retrying],scenes:[],analyzing:false};
+  assert.equal(projectLocked(project),true);
+  assert.equal(characterLocked(project),false);
+  assert.equal(characterLocked(project,idle),false);
+  for(const c of [running,queued,retrying])assert.equal(characterLocked(project,c),true);
+  assert.equal(sheetProgress(project),'2개 생성 중 · 1개 대기 · 최대 3개 동시 생성');
+  project.analyzing=true;assert.equal(characterLocked(project),true);assert.equal(characterLocked(project,idle),true);
+  project.analyzing=false;project.scenes=[{status:'running'}];assert.equal(characterLocked(project),true);
+  project.scenes=[];project.characters=[idle];assert.equal(projectLocked(project),false);
+});
 
 function makeScenes() {
   return Array.from({ length: 100 }, (_, index) => {

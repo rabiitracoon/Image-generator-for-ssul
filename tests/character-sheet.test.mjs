@@ -156,3 +156,65 @@ test('OpenAI sheets use the image model and 4:3 size, attach identity on regener
  const capped=(await api(base,`projects/${p.id}/characters`,'POST',{name:'최대 첨부',description:'외형',images:Array(10).fill(image)})).body;
  assert.equal((await api(base,`projects/${p.id}/character-sheet`,'POST',{characterId:capped.id})).status,400);
 });
+
+test('characters can be added and sheets queued during generation, with independent results and a limit of three',async t=>{
+ const requests=[];let active=0,maxActive=0;
+ const openai=http.createServer((req,res)=>{
+  let body='';req.on('data',d=>body+=d).on('end',()=>{
+   active++;maxActive=Math.max(maxActive,active);
+   requests.push({body,finish:(fail=false)=>{active--;res.writeHead(fail?403:200,{'Content-Type':'application/json'});res.end(JSON.stringify(fail?{error:{message:'one character failed'}}:{data:[{b64_json:PNG}]}));}});
+  });
+ });
+ openai.listen(0,'127.0.0.1');await once(openai,'listening');t.after(()=>{openai.closeAllConnections();openai.close();});
+ const {base}=await start(t,{extraEnv:{OPENAI_BASE_URL:`http://127.0.0.1:${openai.address().port}/v1`}});
+ await api(base,'settings','PUT',{imageProvider:'openai'});
+ const p=(await api(base,'projects','POST',{name:'여러 캐릭터'})).body,route=`projects/${p.id}`,characters=[];
+ const readProject=async()=> (await api(base,'state')).body.projects[0];
+ const add=async(name,images=[])=>{const result=await api(base,route+'/characters','POST',{name,description:`${name}의 고유 외형`,images});assert.equal(result.status,201);return result.body;};
+ const run=character=>api(base,route+'/character-sheet','POST',{characterId:character.id});
+ const first=await add('첫째',[image]);characters.push(first);
+ // Two requests arrive together while the first is still preparing its prompt.
+ const duplicates=await Promise.all([run(first),run(first)]);assert.deepEqual(duplicates.map(r=>r.status).sort(),[202,400]);
+ await waitFor(()=>requests.length===1);
+ const firstJob=(await readProject()).characters[0].sheetJob.id;
+ assert.equal((await api(base,route+'/characters/'+first.id,'PUT',{description:'변경 금지'})).status,400);
+ assert.equal((await api(base,route+'/characters/'+first.id,'DELETE',{})).status,400);
+ assert.equal((await api(base,route+'/references','POST',{characterId:first.id,...image})).status,400);
+ assert.equal((await api(base,route+'/references/'+first.references[0].id,'DELETE',{})).status,400);
+ assert.equal((await api(base,route,'PUT',{script:'작업 중 변경'})).status,400);
+ assert.equal((await api(base,route+'/analyze','POST',{})).status,400);
+ const second=await add('둘째');
+ assert.equal((await api(base,route+'/characters/'+second.id,'PUT',{description:'둘째의 수정된 외형'})).status,200);
+ const uploaded=await api(base,route+'/references','POST',{characterId:second.id,...image});assert.equal(uploaded.status,201);
+ assert.equal((await api(base,route+'/references/'+uploaded.body.references[0].id,'DELETE',{})).status,200);
+ characters.push(second);assert.equal((await run(second)).status,202);
+ for(const name of ['셋째','넷째']){const c=await add(name);characters.push(c);assert.equal((await run(c)).status,202);}
+ await waitFor(()=>requests.length===3);
+ const queued=await readProject();assert.deepEqual(queued.characters.map(c=>c.sheetJob.status),['running','running','running','queued']);assert.equal(queued.characters[0].sheetJob.id,firstJob);
+ assert.equal((await run(characters[3])).status,400);
+ assert.equal((await api(base,route+'/generate','POST',{})).status,400);
+ // A failure frees a slot and leaves the other characters' jobs running.
+ requests[2].finish(true);await waitFor(()=>requests.length===4);
+ const afterFailure=await waitFor(async()=>{const p=await readProject();return p.characters[2].sheetJob.status==='failed'&&p;});
+ assert.equal(afterFailure.characters[2].references.length,0);assert.equal(afterFailure.characters[0].sheetJob.status,'running');
+ requests[0].finish();
+ const finished=await waitFor(async()=>{const p=await readProject();return p.characters[0].sheetJob.status==='done'&&p;});
+ assert.equal(finished.characters[0].references.length,2);
+ assert.equal((await api(base,route+'/characters/'+first.id,'PUT',{name:'첫째 완료'})).status,200);
+ const fifth=await add('추가 캐릭터');assert.equal((await run(fifth)).status,202);await waitFor(()=>requests.length===5);
+ for(const index of [1,3,4])requests[index].finish();
+ const done=await waitFor(async()=>{const p=await readProject();return p.characters.every(c=>['done','failed'].includes(c.sheetJob.status))&&p;});
+ assert.equal(maxActive,3);assert.equal(done.characters[1].description,'둘째의 수정된 외형');
+ const refs=done.characters.flatMap(c=>c.references.filter(r=>r.engine));assert.equal(refs.length,4);assert.equal(new Set(refs.map(r=>r.id)).size,4);
+ for(const c of done.characters.filter(c=>c.sheetJob.status==='done')){const r=c.references.find(r=>r.id===c.sheetJob.referenceId);assert.ok(r);assert.match(r.prompt,new RegExp(c.description));}
+ const idle=await add('삭제 가능');assert.equal((await api(base,route+'/characters/'+idle.id,'DELETE',{})).status,200);
+ // Character mutations remain protected while a scene itself is generating.
+ await api(base,route,'PUT',{script:'등장인물들이 만났다.'});
+ assert.equal((await api(base,route+'/analyze','POST',{})).status,202);
+ assert.equal((await api(base,route+'/characters','POST',{name:'분석 중'})).status,400);
+ await waitFor(async()=>{const p=await readProject();return !p.analyzing&&p.scenes.length;});
+ assert.equal((await api(base,route+'/generate','POST',{})).status,202);await waitFor(()=>requests.length===6);
+ assert.equal((await api(base,route+'/characters','POST',{name:'장면 생성 중'})).status,400);
+ assert.equal((await run(fifth)).status,400);
+ requests[5].finish();await waitFor(async()=> (await readProject()).scenes[0].status==='done');
+});
