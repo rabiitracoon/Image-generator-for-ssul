@@ -195,5 +195,49 @@ $('#style-search').oninput=filterStyles;$('#favorite-only').onchange=filterStyle
 $('#styles-prev').onclick=()=>{stylePage--;renderStyles();$('#styles').scrollTop=0;};$('#styles-next').onclick=()=>{stylePage++;renderStyles();$('#styles').scrollTop=0;};
 document.addEventListener('keydown',e=>{if(!saving&&!e.target.closest('input,textarea,select,[contenteditable="true"]')&&e.altKey&&tab==='scenes'&&!document.querySelector('dialog[open]')&&['ArrowLeft','ArrowRight'].includes(e.key)){e.preventDefault();navigateScene(e.key==='ArrowLeft'?-1:1);}if((e.metaKey||e.ctrlKey)&&e.key==='s'){e.preventDefault();if(!locked()&&!saving)action(save);}});
 window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue='';}});
-await action(async()=>{await refresh();const status=await api('status');$('#connection').textContent=status.ready?'ChatGPT 연결됨':'Codex 로그인 필요';if(!status.ready)notice(status.message+'\n터미널에서 codex login을 실행해 주세요.');});
+const textNames={codex:'ChatGPT',claude:'Claude'};
+function showEngine(status){const s=status.settings,api=s.imageProvider==='openai';
+ $('#connection').textContent=status.ready?`${textNames[s.textProvider]} 분석 · ${api?'API':'ChatGPT'} 이미지`:'AI 연결 확인 필요';
+ $('#engine-summary').textContent=api?`로컬 저장 · ${s.imageModel}`:'로컬 저장 · API Key 불필요';
+ $('#engine-note-title').textContent=api?`OpenAI API로 생성 · ${s.imageModel}`:'ChatGPT 로그인으로 생성';
+ $('#engine-note').textContent=(api?`OpenAI Images API를 API 키로 직접 호출합니다 (품질 ${s.imageQuality}). 장면 프롬프트와 선택한 스타일 이미지, 등장 캐릭터의 참고 이미지·시트가 OpenAI로 전달되며 API 사용량이 과금됩니다.`:'Codex 공식 이미지 도구가 모델을 자동 선택합니다. 대본과 선택한 스타일 이미지, 등장 캐릭터의 참고 이미지·시트가 OpenAI로 전달되며 계정 사용량이 적용됩니다.')+(s.textProvider==='claude'?` 장면 분석에는 대본이 Anthropic(Claude ${s.claudeModel})으로 전달됩니다.`:'');}
+const loginNames={codex:'ChatGPT',claude:'Claude'},loginPolls={};
+function showLogins(status){for(const service of ['codex','claude']){const info=status[service],login=info?.login||{};
+ $$(`.app-sidebar [data-login="${service}"]`).forEach(b=>b.classList.toggle('hidden',!info||info.ready));
+ const st=$(`[data-login-status="${service}"]`);st.textContent='';
+ if(info?.ready)st.textContent=`✓ ${loginNames[service]} 로그인됨`;
+ else if(login.running){st.textContent='브라우저에서 로그인을 완료해 주세요. ';if(login.url){const a=document.createElement('a');a.href=login.url;a.target='_blank';a.rel='noopener';a.textContent='로그인 창 다시 열기';st.append(a);}}
+ else if(login.error)st.textContent=login.error;
+ $(`[data-login-code="${service}"]`)?.classList.toggle('hidden',!login.running);
+ $$(`[data-login="${service}"]`).forEach(b=>{b.disabled=!!login.running;b.textContent=login.running?'로그인 대기 중…':`${loginNames[service]} 로그인`;});}}
+function pollLogin(service){clearInterval(loginPolls[service]);
+ loginPolls[service]=setInterval(()=>action(async()=>{const status=await api('status');showEngine(status);showLogins(status);const info=status[service];
+  if(info?.ready){clearInterval(loginPolls[service]);notice(status.ready?`${loginNames[service]} 로그인 완료!`:status.message);}
+  else if(!info?.login?.running){clearInterval(loginPolls[service]);if(info?.login?.error)notice(info.login.error);}}),3000);}
+document.addEventListener('click',e=>{const b=e.target.closest('[data-login],[data-submit-code]');if(!b)return;
+ if(b.dataset.login)action(async()=>{const service=b.dataset.login;await api(`login/${service}`,'POST',{});
+  notice(`브라우저에서 ${loginNames[service]} 계정으로 로그인해 주세요.${service==='claude'?' 인증 코드가 표시되면 AI 설정의 입력칸에 붙여 넣으세요.':''}`);
+  showLogins(await api('status'));pollLogin(service);});
+ if(b.dataset.submitCode)action(async()=>{const service=b.dataset.submitCode,input=$(`[data-login-code="${service}"] input`);
+  await api(`login/${service}/code`,'POST',{code:input.value});input.value='';$(`[data-login-status="${service}"]`).textContent='코드를 확인하는 중…';});});
+async function checkStatus(){const status=await api('status');showEngine(status);showLogins(status);if(!status.ready)notice(status.message);return status;}
+let settingsInfo=null;
+function settingsVisibility(){$('[data-login-row="codex"]').classList.toggle('hidden',![$('#set-text-provider').value,$('#set-image-provider').value].includes('codex'));$$('#settings-form [data-show]').forEach(el=>el.classList.toggle('hidden',![$('#set-text-provider').value,$('#set-image-provider').value].includes(el.dataset.show)));}
+function fillOptions(select,values,selected){select.innerHTML=values.map(v=>`<option>${v}</option>`).join('');select.value=selected;}
+function showKeyStatus(openai){$('#openai-key-status').textContent=openai.configured?`${openai.source==='env'?'환경 변수 OPENAI_API_KEY':'저장된 키'} 사용 중 (…${openai.last4})`:'저장된 키 없음';$('#clear-openai-key').classList.toggle('hidden',openai.source!=='saved');}
+$('#ai-settings').onclick=()=>action(async()=>{settingsInfo=await api('settings');const {settings,options,openai}=settingsInfo;
+ $('#set-text-provider').value=settings.textProvider;$('#set-image-provider').value=settings.imageProvider;
+ fillOptions($('#set-claude-model'),options.claudeModels,settings.claudeModel);fillOptions($('#set-image-model'),options.imageModels,settings.imageModel);fillOptions($('#set-image-quality'),options.imageQualities,settings.imageQuality);
+ $('#set-openai-key').value='';showKeyStatus(openai);$('#text-status').textContent='';$('#image-status').textContent='';settingsVisibility();$('#settings-modal').showModal();});
+$('#set-text-provider').onchange=$('#set-image-provider').onchange=settingsVisibility;
+$('#settings-cancel').onclick=()=>$('#settings-modal').close();
+$('#clear-openai-key').onclick=()=>action(async()=>{const r=await api('settings','PUT',{clearOpenaiKey:true});showKeyStatus(r.openai);});
+$('#settings-form').onsubmit=e=>{e.preventDefault();action(async()=>{const button=e.submitter;button.disabled=true;
+ try{await api('settings','PUT',{textProvider:$('#set-text-provider').value,claudeModel:$('#set-claude-model').value,imageProvider:$('#set-image-provider').value,imageModel:$('#set-image-model').value,imageQuality:$('#set-image-quality').value,openaiApiKey:$('#set-openai-key').value});
+  $('#set-openai-key').value='';$('#text-status').textContent='연결 확인 중…';const status=await checkStatus();
+  $('#text-status').textContent=status.text.ready?'✓ 장면 분석 연결됨':status.text.message;$('#image-status').textContent=status.image.ready?'✓ 이미지 생성 준비됨':status.image.message;
+  if(status.ready){$('#settings-modal').close();notice('AI 설정을 저장했습니다.');}}
+ catch(error){$('#image-status').textContent=error.message;throw error;}
+ finally{button.disabled=false;}});};
+await action(async()=>{await refresh();await checkStatus();});
 setInterval(()=>{if(locked()&&!dirty)action(refresh);},2500);

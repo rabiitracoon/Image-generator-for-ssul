@@ -6,10 +6,10 @@
   <a class="brand" href="/">◈ <span>SCENE STUDIO<small>SCRIPT TO IMAGE</small></span></a>
   <button id="new-project" class="primary">＋ 새 프로젝트</button>
   <div class="nav-label">WORKSPACE</div><div id="projects"></div>
-  <div class="aside-bottom"><span class="dot"></span><span id="connection">Codex 연결 확인 중</span><small>로컬 저장 · API Key 불필요</small></div>
+  <div class="aside-bottom"><span class="dot"></span><span id="connection">AI 연결 확인 중</span><button data-login="codex" class="login-button hidden">ChatGPT 로그인</button><button data-login="claude" class="login-button hidden">Claude 로그인</button><small id="engine-summary">로컬 저장</small></div>
 </aside>
 <main>
-<header><div><span class="eyebrow">YOUR STORY, FRAME BY FRAME</span><h1 id="project-title">대본에서 장면으로.</h1></div><div class="header-actions"><span id="save-state" role="status"></span><button id="save">변경 저장</button><a id="export" class="button" href="#">내보내기 ↗</a></div></header>
+<header><div><span class="eyebrow">YOUR STORY, FRAME BY FRAME</span><h1 id="project-title">대본에서 장면으로.</h1></div><div class="header-actions"><span id="save-state" role="status"></span><button id="ai-settings">⚙ AI 설정</button><button id="save">변경 저장</button><a id="export" class="button" href="#">내보내기 ↗</a></div></header>
 <nav aria-label="작업 단계"><button data-tab="script" class="active">01 <span>대본 & 캐릭터</span></button><button data-tab="scenes">02 <span>장면 스토리보드</span><b id="scene-count">0</b></button><button data-tab="styles">03 <span>스타일 라이브러리</span></button></nav>
 <div id="notice" role="status"></div>
 <section id="script" class="tab">
@@ -17,7 +17,7 @@
   <div class="script-grid"><div class="panel script-panel"><label>프로젝트 이름<input id="name" placeholder="프로젝트 이름"></label><div class="label-row"><label for="script-input">대본</label><small id="char-count">0자</small></div><textarea id="script-input" class="script-input" placeholder="내레이션이나 이야기를 그대로 붙여 넣으세요."></textarea><div class="panel-foot"><span>의미 · 행동 · 장소 · 감정 기준으로 장면을 나눕니다.</span><button id="analyze" class="primary">✦ AI 장면 분석</button></div></div>
   <div class="panel settings-panel"><h3>프로젝트 설정</h3><label>화면 비율<select id="aspect"><option>16:9</option><option>9:16</option><option>1:1</option><option>4:3</option></select></label><div class="field-label">기본 스타일</div><input type="hidden" id="default-style"><div id="project-style-card"></div><button id="choose-project-style" class="wide">▧ 스타일 선택 · 직접 만들기</button><label>꼭 지켜야 할 조건<textarea id="constraints" placeholder="예: 글자 금지. 캐릭터의 노란 우비 유지."></textarea></label><p class="hint">프로젝트 기본 스타일은 모든 장면에 적용됩니다. 개별 장면에서 바꿀 수도 있습니다.</p></div></div>
   <div class="section-heading"><div><h2>캐릭터 레퍼런스</h2><p>일반 이미지 또는 정면·측면·표정이 담긴 캐릭터 시트를 등록하세요.</p></div><button id="add-character">＋ 캐릭터 추가</button></div><div id="characters" class="characters"></div>
-  <div class="note"><b>ChatGPT 로그인으로 생성</b><p>Codex 공식 이미지 도구가 모델을 자동 선택합니다. 대본과 선택한 스타일 이미지, 등장 캐릭터의 참고 이미지·시트가 OpenAI로 전달되며 계정 사용량이 적용됩니다.</p></div>
+  <div class="note"><b id="engine-note-title">ChatGPT 로그인으로 생성</b><p id="engine-note">Codex 공식 이미지 도구가 모델을 자동 선택합니다. 대본과 선택한 스타일 이미지, 등장 캐릭터의 참고 이미지·시트가 OpenAI로 전달되며 계정 사용량이 적용됩니다.</p></div>
 </section>
 <section id="scenes" class="tab hidden">
   <div class="board-toolbar"><div class="board-heading"><h2>스토리보드</h2><span id="progress"></span></div><div class="actions"><div class="segmented" aria-label="스토리보드 보기"><button id="view-focus" class="active" aria-pressed="true">▣ 집중 편집</button><button id="view-grid" aria-pressed="false">▦ 전체 보드</button></div><button id="add-scene" title="빈 장면 추가">＋ 장면</button><button id="generate" class="primary">✦ 미생성 / 실패 생성</button></div></div>
@@ -42,6 +42,14 @@
   <div id="preview-notice" class="hint"></div><div id="presets" class="preset-grid"></div><div class="pagination"><button id="styles-prev">← 이전</button><span id="styles-page"></span><button id="styles-next">다음 →</button></div>
 </section>
 </main>
+<dialog id="settings-modal"><form id="settings-form"><h2>AI 설정</h2><p>장면 분석과 이미지 생성에 사용할 서비스를 고르세요. 진행 중인 작업은 시작할 때의 설정을 유지합니다.</p>
+  <fieldset><legend>장면 분석 (텍스트)</legend><label>서비스<select id="set-text-provider"><option value="codex">ChatGPT · Codex 로그인</option><option value="claude">Claude · Claude 계정 로그인 (OAuth)</option></select></label><label data-show="claude">Claude 모델<select id="set-claude-model"></select></label><p class="hint" data-show="claude">설치된 공식 Claude Code CLI의 로그인(Claude 구독)을 사용합니다. 앱은 로그인 토큰을 읽거나 저장하지 않습니다.</p>
+  <div class="login-row" data-show="claude" data-login-row="claude"><button type="button" data-login="claude">Claude 로그인</button><span class="hint" data-login-status="claude"></span>
+   <div class="login-code hidden" data-login-code="claude"><input autocomplete="off" spellcheck="false" placeholder="브라우저에 인증 코드가 표시되면 여기에 붙여 넣으세요" aria-label="Claude 인증 코드"><button type="button" data-submit-code="claude">코드 제출</button></div></div><p class="hint" id="text-status"></p></fieldset>
+  <fieldset><legend>이미지 생성</legend><label>서비스<select id="set-image-provider"><option value="codex">ChatGPT · Codex 로그인 (모델 자동 선택)</option><option value="openai">OpenAI API 키 · GPT Image 2.5</option></select></label>
+   <div data-show="openai"><label>이미지 모델<select id="set-image-model"></select></label><label>품질<select id="set-image-quality"></select></label><label>OpenAI API 키<input id="set-openai-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-..."></label><p class="hint"><span id="openai-key-status"></span> <button type="button" id="clear-openai-key" class="text-button">저장된 키 삭제</button></p><p class="hint">키는 이 폴더의 <code>data/secrets.json</code>에만 저장되며 화면과 내보내기에 포함되지 않습니다. 사용량은 API 계정에 과금됩니다. 참고 이미지는 최대 16장까지 전달됩니다.</p></div><p class="hint" id="image-status"></p></fieldset>
+  <div class="login-row" data-login-row="codex"><button type="button" data-login="codex">ChatGPT 로그인</button><span class="hint" data-login-status="codex"></span></div>
+  <div class="actions dialog-actions"><button type="button" id="settings-cancel">취소</button><button class="primary" type="submit">저장</button></div></form></dialog>
 <dialog id="modal"><button id="close-modal" class="close" aria-label="닫기">✕</button><h2 id="modal-title"></h2><pre id="modal-content"></pre></dialog>
 <dialog id="input-modal"><form id="input-form"><h2 id="input-title"></h2><p id="input-description"></p><div id="input-fields"></div><div class="actions dialog-actions"><button type="button" id="input-cancel">취소</button><button class="primary" type="submit">확인</button></div></form></dialog>
 <dialog id="style-detail"><div class="detail-heading"><div><small>STYLE PREVIEW</small><h2 id="detail-name"></h2></div><button id="close-detail" aria-label="스타일 미리보기 닫기">✕</button></div><div class="detail-layout"><div><div id="detail-image"></div><div id="detail-thumbs"></div><p id="detail-image-caption" class="hint">참고 이미지 · 현재 대본으로 생성한 이미지가 아닙니다.</p></div><div class="detail-info"><p id="detail-description"></p><div id="detail-meta"></div><details><summary>스타일 프롬프트 보기</summary><pre id="detail-prompt"></pre></details><p class="hint">이미지의 등장인물과 내용은 가져오지 않고 표현 스타일만 적용합니다.</p></div></div><div class="detail-footer"><button id="detail-favorite">☆ 즐겨찾기</button><button id="detail-edit">복사해서 편집</button><button id="detail-apply" class="primary">이 스타일 적용</button></div></dialog>

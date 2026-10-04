@@ -4,11 +4,25 @@
 
 ## 실행
 
-- Node.js 22 이상과 ChatGPT에 로그인된 최신 Codex CLI가 필요합니다.
+- Node.js 22 이상과 ChatGPT에 로그인된 최신 Codex CLI가 필요합니다. Claude 분석이나 OpenAI API 이미지 생성만 쓸 경우 아래 **AI 서비스 선택**을 참고하세요.
 - macOS: `시작.command`를 더블클릭합니다.
 - 터미널: 이 폴더에서 `npm start` 실행 후 <http://127.0.0.1:4317> 접속합니다.
 - 종료: 실행한 터미널에서 Ctrl+C.
 - 연결 문제가 있으면 `codex login status`로 확인하고 `codex login`으로 로그인합니다. 앱은 로그인 토큰을 읽거나 복사하지 않고 설치된 공식 CLI에 인증을 맡깁니다.
+
+### AI 서비스 선택 (⚙ AI 설정)
+
+상단의 **⚙ AI 설정**에서 장면 분석과 이미지 생성 서비스를 각각 고를 수 있습니다. 진행 중인 작업은 시작할 때의 설정을 유지합니다.
+
+| 단계 | 선택지 | 인증 |
+| --- | --- | --- |
+| 장면 분석 (텍스트) | ChatGPT · Codex (기본) | `codex login` |
+| | Claude (`sonnet`/`opus`/`haiku`) | Claude Code CLI의 OAuth 로그인 (`claude auth login`) |
+| 이미지 생성 | ChatGPT · Codex 이미지 도구 (기본, 모델 자동 선택) | `codex login` |
+| | OpenAI API · `gpt-image-2.5-flare`(기본, 빠름) / `gpt-image-2.5-sunburst`(정밀) | OpenAI API 키 |
+
+- **Claude**: 설치된 공식 Claude Code CLI에 인증을 맡기며 앱은 토큰을 읽거나 저장하지 않습니다. 구독 로그인을 쓰도록 `ANTHROPIC_API_KEY`는 CLI에 전달하지 않습니다. 실행 파일은 PATH, `~/.claude/local`, `~/.local/bin`, Homebrew, Claude 데스크톱 앱에 포함된 CLI 순으로 찾으며 `CLAUDE_BIN`으로 지정할 수 있습니다. Claude는 이미지를 만들지 않으므로 이미지 생성은 Codex 또는 OpenAI API를 사용합니다.
+- **OpenAI API**: 참고 이미지가 없으면 `/v1/images/generations`, 있으면 `/v1/images/edits`(최대 16장)를 호출합니다. 품질은 `auto`~`max`, 크기는 화면 비율에 맞춰 16:9 2048×1152, 9:16 1152×2048, 1:1 1024×1024, 4:3 1536×1152로 요청합니다. 키는 `data/secrets.json`(권한 600)에만 저장되며 `/api/state`, 내보내기, 화면에 노출되지 않습니다. 저장된 키가 없으면 `OPENAI_API_KEY` 환경 변수를 사용합니다. 폴더를 통째로 옮기면 키도 함께 복사되므로 공유 전에 설정에서 **저장된 키 삭제**를 누르세요. 사용량은 API 계정에 과금됩니다. `OPENAI_BASE_URL`로 호환 엔드포인트를 지정할 수 있습니다.
 
 Codex 실행 파일은 `CODEX_BIN`, 텍스트 분석/도구 실행 모델은 `SCENE_CODEX_MODEL` 환경 변수로 바꿀 수 있습니다. 모델을 지정하지 않으면 설치된 공식 Codex의 기본 모델을 사용합니다. PATH와 `/Applications`, 사용자 Applications 폴더에서 현재 및 이전 ChatGPT/Codex 앱의 CLI 위치를 찾습니다. 앱 기본 포트는 4317, 데이터 폴더는 `data/`이며 `PORT`, `SCENE_DATA_DIR`로 변경할 수 있습니다. 참고 이미지 폴더는 실행 파일 옆의 `참고이미지/`입니다(`SCENE_REFERENCE_DIR`로 별도 지정 가능).
 
