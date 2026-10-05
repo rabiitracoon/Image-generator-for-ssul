@@ -101,9 +101,9 @@ test('analysis prompt settings persist per project and preview unsaved inputs wi
  assert.equal((await api(base,route+'/analysis-prompt','PUT',{instructions:''})).status,400);
  assert.equal((await api(base,route+'/analysis-prompt','PUT',{density:'bad'})).status,400);
  const p2=(await api(base,'projects','POST',{name:'별도 프로젝트'})).body;assert.equal((await api(base,`projects/${p2.id}/analysis-prompt`)).body.instructions,defaults.instructions);
- const script='민지가 말했다.',scenes=[{title:'풀샷',sourceText:script,camera:'풀샷',prompt:'wide shot',characterIds:[],continuation:false,styleId:null},{title:'대사',sourceText:script,camera:'바스트샷',prompt:'bust shot',characterIds:[],continuation:true,styleId:null}];
+ const script='민지가 말했다.',scenes=[{title:'풀샷',sourceText:'민지가 ',camera:'풀샷',prompt:'wide shot',characterIds:[],styleId:null},{title:'대사',sourceText:'말했다.',camera:'바스트샷',prompt:'bust shot',characterIds:[],styleId:null}];
  await api(base,route,'PUT',{script});assert.equal((await api(base,route+'/scenes','PUT',{scenes})).status,200);
- const state=(await api(base,'state')).body.projects[0];assert.equal(state.scenes.length,2);assert.equal(state.scenes[1].continuation,true);assert.equal(state.scenes[1].camera,'바스트샷');
+ const state=(await api(base,'state')).body.projects[0];assert.equal(state.scenes.length,2);assert.equal(state.scenes[1].sourceRange.start,4);assert.equal(state.scenes.map(s=>s.sourceText).join(''),script);assert.equal(state.scenes[1].camera,'바스트샷');
  const generation=(await api(base,route+'/preview','POST',{sceneId:state.scenes[1].id})).body;assert.match(generation.prompt,/Camera direction: 바스트샷/);
 });
 

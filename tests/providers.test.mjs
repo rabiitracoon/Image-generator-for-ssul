@@ -79,7 +79,7 @@ let input='';process.stdin.on('data',d=>input+=d).on('end',()=>{
   const {script}=JSON.parse(input.slice(input.indexOf('{')));
   require('fs').writeFileSync(process.cwd()+'/args.json',JSON.stringify(args));
   require('fs').writeFileSync(process.cwd()+'/prompt.txt',input);
-  console.log(JSON.stringify({type:'result',is_error:false,structured_output:{scenes:[{title:'장면',sourceText:script,continuation:false,camera:'와이드샷',reason:'장소 소개',prompt:'quiet street',characterIds:[]},{title:'단서',sourceText:script,continuation:true,camera:'사물 인서트',reason:'같은 문장에서 단서 강조',prompt:'close up of a door handle',characterIds:[]}]}}));
+  console.log(JSON.stringify({type:'result',is_error:false,structured_output:{scenes:[{title:'장면',sourceText:'골목은 ',camera:'와이드샷',reason:'장소 소개',prompt:'quiet street',characterIds:[]},{title:'단서',sourceText:'조용했다.',camera:'사물 인서트',reason:'같은 문장에서 단서 강조',prompt:'close up of a door handle',characterIds:[]}]}}));
 });
 `);
   await chmod(fakeClaude, 0o755);
@@ -120,7 +120,7 @@ let input='';process.stdin.on('data',d=>input+=d).on('end',()=>{
   assert.equal((await api(base, `projects/${project.id}/analyze`, 'POST', {})).status, 202);
   const analyzed = await waitFor(async () => (await api(base, 'state')).body.projects.find(p => p.id === project.id && !p.analyzing && p.scenes.length));
   assert.equal(analyzed.scenes[0].prompt, 'quiet street');
-  assert.equal(analyzed.scenes.length,2);assert.equal(analyzed.scenes[1].continuation,true);assert.equal(analyzed.scenes[1].camera,'사물 인서트');assert.equal(analyzed.analysisRun.prompt,expectedPrompt);
+  assert.equal(analyzed.scenes.length,2);assert.equal(analyzed.scenes[1].sourceRange.start,4);assert.equal(analyzed.scenes.map(s=>s.sourceText).join(''),'골목은 조용했다.');assert.equal(analyzed.scenes[1].camera,'사물 인서트');assert.equal(analyzed.analysisRun.prompt,expectedPrompt);
   const {readdir}=await import('node:fs/promises');const jobs=await readdir(path.join(data,'jobs'));
   assert.equal(await readFile(path.join(data,'jobs',jobs[0],'prompt.txt'),'utf8'),expectedPrompt);
 

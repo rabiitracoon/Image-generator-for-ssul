@@ -12,3 +12,5 @@
 /* Keep preview tiles at their intrinsic height; scroll the grid, never compress rows. */
 #scene-grid{grid-auto-rows:max-content;align-items:start;flex:1}.board-card{display:flex;flex-direction:column;min-height:240px;align-self:start}.board-card>.preview-visual{flex-shrink:0}.board-card-info{width:100%}
 @media(max-width:760px){.board-card{min-height:195px}}
+
+.source-cue{display:block;font-weight:400;margin:6px 0}.image-actions{flex-wrap:wrap}.image-actions .button{font-size:11px}#source-mapping-error{margin:12px 0}.header-actions{flex-wrap:wrap}
