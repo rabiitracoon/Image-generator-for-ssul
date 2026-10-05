@@ -1,6 +1,6 @@
 const activeStatuses=['queued','running','retrying'];
 export const jobActive=status=>activeStatuses.includes(status);
-export const sceneWorkActive=project=>!!project&&(!!project.analyzing||project.scenes.some(s=>jobActive(s.status)));
+export const sceneWorkActive=project=>!!project&&(!!project.analyzing||project.continuityRun?.status==='running'||project.scenes.some(s=>jobActive(s.status)));
 export const characterLocked=(project,character)=>sceneWorkActive(project)||jobActive(character?.sheetJob?.status);
 export const projectLocked=project=>sceneWorkActive(project)||!!project?.characters.some(c=>jobActive(c.sheetJob?.status));
 export function sheetProgress(project){
@@ -25,10 +25,11 @@ export function pageItems(items, page=0, size=24) {
 
 export function mergeProjectProgress(local,remote){
  const completed=remote.analysisRun?.status==='done'&&(local.analyzing||local.analysisRun?.startedAt!==remote.analysisRun.startedAt||local.analysisRun?.id!==remote.analysisRun.id);
- local.characters=remote.characters;
+ const continuityChanged=remote.continuityRun?.id!==local.continuityRun?.id||local.continuityRun?.status==='running';
+ local.characters=remote.characters;local.locations=remote.locations;local.continuityRun=remote.continuityRun;local.continuityPlan=remote.continuityPlan;
  for(const key of ['analyzing','analysisRun','analysisError'])local[key]=remote[key];
  if(completed){local.scenes=remote.scenes;local.sourceMappingError=remote.sourceMappingError;}
- else for(const scene of local.scenes){const updated=remote.scenes.find(s=>s.id===scene.id);if(updated)for(const key of ['status','images','attempts','error'])scene[key]=updated[key];}
+ else for(const scene of local.scenes){const updated=remote.scenes.find(s=>s.id===scene.id);if(updated)for(const key of ['status','images','attempts','error',...(continuityChanged?['characterIds','locationIds']:[])])scene[key]=updated[key];}
 }
 export function analysisProgress(project,now=Date.now()){
  const run=project?.analysisRun;

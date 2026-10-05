@@ -5,9 +5,9 @@ import {fileURLToPath} from 'node:url';
 import {Readable} from 'node:stream';
 import {pipeline} from 'node:stream/promises';
 import {id,validateScenes,composePrompt,Queue} from './lib/core.mjs';
-import {authStatus,analyze,generate,imageType,codexLogin} from './lib/codex.mjs';
-import {CLAUDE_MODELS,claudeAuthStatus,analyzeWithClaude,claudeLogin} from './lib/claude.mjs';
-import {IMAGE_MODELS,IMAGE_QUALITIES,generateWithOpenAI} from './lib/openai-image.mjs';
+import {authStatus,analyze,generate,imageType,codexLogin,codexJSON} from './lib/codex.mjs';
+import {CLAUDE_MODELS,claudeAuthStatus,analyzeWithClaude,claudeLogin,claudeJSON} from './lib/claude.mjs';
+import {IMAGE_MODELS,IMAGE_QUALITIES,generateWithOpenAI,referenceLegend} from './lib/openai-image.mjs';
 import {parseRepo,syncSource} from './lib/presets.mjs';
 import {REFERENCE_FOLDER,migrateReferences,portableReferencePath,resolveProjectReferences,resolveStyleReferences} from './lib/references.mjs';
 import {codexModelCatalog,effectiveCodexModel,requireCodexModel} from './lib/codex-models.mjs';
@@ -17,6 +17,7 @@ import {refreshSourceAssignments} from './lib/narration.mjs';
 import {editingCue,editingManifest,editingFiles,imageDownloadName} from './lib/editing-export.mjs';
 import {zipEntries} from './lib/zip.mjs';
 import {runAnalysis,analysisCancelled,abortable,ANALYSIS_TIMEOUT_MS} from './lib/analysis-job.mjs';
+import {continuitySchema,continuityPrompt,continuityFingerprint,applyContinuityPlan,missingAnchors,composeLocationSheet} from './lib/continuity.mjs';
 const ROOT=path.dirname(fileURLToPath(import.meta.url)),DATA=path.resolve(process.env.SCENE_DATA_DIR||path.join(ROOT,'data')),PORT=Number(process.env.PORT||4317);
 const REFERENCE_DIR=path.resolve(process.env.SCENE_REFERENCE_DIR||path.join(ROOT,REFERENCE_FOLDER));
 await mkdir(DATA,{recursive:true});
@@ -33,6 +34,7 @@ const migration=await migrateReferences(db,{dataDir:DATA,referenceDir:REFERENCE_
 if(migration.changed){await mkdir(path.join(DATA,'backups'),{recursive:true});await writeFile(path.join(DATA,'backups',`reference-paths-${Date.now()}-${id()}.json`),beforeMigration);}
 if(migration.missing.length)console.warn(`참고 이미지 파일을 찾을 수 없습니다: ${migration.missing.join(', ')}. 참고이미지 폴더를 확인해 주세요.`);
 for(const p of db.projects){
+ if(p.continuityRun?.status==='running'){p.continuityRun.status='failed';p.continuityRun.error='앱이 종료되어 기준 이미지 준비가 중단되었습니다. 다시 준비해 주세요.';}
  refreshSourceAssignments(p);
  if(p.analyzing&&p.analysisRun){p.analysisRun.status='failed';p.analysisError='앱이 종료되어 분석이 중단되었습니다. 다시 분석해 주세요.';}p.analyzing=false;
  for(const s of p.scenes)if(['queued','running','retrying'].includes(s.status)){s.status='failed';s.error='앱이 종료되어 작업이 중단되었습니다. 재생성해 주세요.';}
@@ -41,38 +43,45 @@ for(const p of db.projects){
 let writes=Promise.resolve();function save(){const value=JSON.stringify(db,null,2);writes=writes.catch(()=>{}).then(async()=>{await writeFile(path.join(DATA,'state.tmp'),value);await rename(path.join(DATA,'state.tmp'),path.join(DATA,'state.json'));});return writes;}await save();
 function editedScenes(p, scenes, script) {
  const valid=validateScenes(scenes,script,p.characters);
+ for(const s of scenes)if(s.locationIds!==undefined&&(!Array.isArray(s.locationIds)||s.locationIds.some(key=>!(p.locations||[]).some(l=>l.id===key))))throw Error('알 수 없는 배경 장소입니다.');
  if(new Set(scenes.map(s=>s.id).filter(Boolean)).size!==scenes.filter(s=>s.id).length)throw Error('장면 ID가 중복되었습니다.');
  for(const s of scenes)style(s.styleId??null);
  const previous=new Map(p.scenes.map(s=>[s.id,s]));
  return valid.map((v,i)=>{const input=scenes[i],old=previous.get(input.id);const styleId=input.styleId??null;
- const changed=!old||['prompt','sourceText','camera'].some(k=>(old[k]||'')!==v[k])||JSON.stringify(old.characterIds)!==JSON.stringify(v.characterIds)||old.styleId!==styleId;
- return {...v,id:old?.id||(/^[a-f0-9-]{36}$/.test(input.id||'')?input.id:v.id),images:old?.images||[],status:changed?'draft':old.status,attempts:old?.attempts||0,error:changed?'':old?.error||'',styleId};});
+ const locationIds=input.locationIds??old?.locationIds??[];
+ const changed=!old||JSON.stringify(old.locationIds||[])!==JSON.stringify(locationIds)||['prompt','sourceText','camera'].some(k=>(old[k]||'')!==v[k])||JSON.stringify(old.characterIds)!==JSON.stringify(v.characterIds)||old.styleId!==styleId;
+ return {...v,locationIds,id:old?.id||(/^[a-f0-9-]{36}$/.test(input.id||'')?input.id:v.id),images:old?.images||[],status:changed?'draft':old.status,attempts:old?.attempts||0,error:changed?'':old?.error||'',styleId};});
 }
 const project=(pid)=>{const p=db.projects.find(p=>p.id===pid);if(!p)throw Error('프로젝트를 찾을 수 없습니다.');return p;};
 const scenePrompt=async(p,s)=>{
  const styleId=s.styleId===null?p.defaultStyleId:s.styleId;
  const selectedStyle=await resolveStyleReferences(db.presets.find(style=>style.id===styleId),REFERENCE_DIR);
- return composePrompt(await resolveProjectReferences({...p,characters:p.characters.filter(c=>s.characterIds.includes(c.id))},REFERENCE_DIR),s,selectedStyle?[selectedStyle]:db.presets);
+ return composePrompt(await resolveProjectReferences({...p,characters:p.characters.filter(c=>s.characterIds.includes(c.id)),locations:(p.locations||[]).filter(l=>(s.locationIds||[]).includes(l.id))},REFERENCE_DIR),s,selectedStyle?[selectedStyle]:db.presets);
 };
-const preparingSheets=new Set(),analysisJobs=new Map();
+const preparingSheets=new Set(),analysisJobs=new Map(),continuityJobs=new Map();
 const sheetKey=(p,c)=>`${p.id}/sheet/${c.id}`;
-const sceneBusy=p=>p.analyzing||[...queue.keys].some(key=>key.startsWith(p.id+'/')&&!key.startsWith(p.id+'/sheet/'));
+const sceneBusy=p=>p.analyzing||p.continuityRun?.status==='running'||[...queue.keys].some(key=>key.startsWith(p.id+'/')&&!key.startsWith(p.id+'/sheet/'));
 const sheetBusy=p=>[...queue.keys,...preparingSheets].some(key=>key.startsWith(p.id+'/sheet/'));
 const busy=p=>sceneBusy(p)||sheetBusy(p);
 const characterBusy=(p,c)=>sceneBusy(p)||!!c&&(queue.keys.has(sheetKey(p,c))||preparingSheets.has(sheetKey(p,c)));
-const generationInputs=p=>JSON.stringify({script:p.script,constraints:p.constraints,aspectRatio:p.aspectRatio,defaultStyleId:p.defaultStyleId,characters:p.characters,scenes:p.scenes.map(({id,prompt,sourceText,camera,characterIds,styleId})=>({id,prompt,sourceText,camera,characterIds,styleId}))});
+const generationInputs=p=>JSON.stringify({script:p.script,constraints:p.constraints,aspectRatio:p.aspectRatio,defaultStyleId:p.defaultStyleId,characters:p.characters,locations:p.locations,scenes:p.scenes.map(({id,prompt,sourceText,camera,characterIds,locationIds,styleId})=>({id,prompt,sourceText,camera,characterIds,locationIds,styleId}))});
 const usesStyle=(p,styleId)=>p.defaultStyleId===styleId||p.scenes.some(s=>s.styleId===styleId);
 function invalidateStyle(styleId){for(const p of db.projects)for(const s of p.scenes)if((s.styleId===null?p.defaultStyleId:s.styleId)===styleId)s.status='draft';}
 function invalidateCharacter(p,characterId){for(const s of p.scenes)if(s.characterIds.includes(characterId))s.status='draft';}
 const queue=new Queue({limit:3,retries:2,run:async task=>{
  const r=task.engine.provider==='openai'?await generateWithOpenAI({...task,...task.engine,apiKey:task.apiKey}):await generate({...task,model:task.engine.codexModel});
  const metadata={createdAt:new Date().toISOString(),prompt:task.prompt,style:task.style,engine:task.engine.provider==='openai'?task.engine.model:'codex',...(task.engine.codexModel?{controllerModel:task.engine.codexModel}:{})};
+ if(task.kind==='location-sheet')return storeReference({displayName:`${task.locationName} 배경 시트.${r.ext}`,...r},{kind:'location-sheet',...metadata});
  if(task.kind==='character-sheet')return storeReference({displayName:`${task.characterName} 캐릭터 시트.${r.ext}`,...r},{kind:'character-sheet',...metadata,source:task.source});
  const filename=`${id()}.${r.ext}`,url=`/media/images/${filename}`,result={url,...metadata,cue:task.cue,version:task.imageVersion,metadataUrl:`/media/images/${filename.replace(/\.[^.]+$/,'.json')}`,downloadName:imageDownloadName({id:task.cue.sceneId,sourceText:task.cue.sourceText},task.cue.cutIndex-1,{url},task.imageVersion)};
  await mkdir(path.join(DATA,'images'),{recursive:true});await writeFile(path.join(DATA,'images',filename),r.data);await writeFile(path.join(DATA,'images',filename.replace(/\.[^.]+$/,'.json')),JSON.stringify({schemaVersion:1,imageFile:filename,...result},null,2));return result;
 },onChange:async(key,status,info)=>{
  const [pid,sid,cid]=key.split('/'),p=project(pid);
- if(sid==='sheet'){
+ if(sid==='anchor'){
+  const entity=(cid==='characters'?p.characters:p.locations).find(e=>e.id===key.split('/')[3]);
+  const job=p.continuityRun.assets.find(a=>a.entityId===entity.id&&a.kind===cid);Object.assign(job,{status,attempts:info.attempt,error:info.error||''});
+  if(info.result){entity.references.push(info.result);job.referenceId=info.result.id;}
+ }else if(sid==='sheet'){
   const c=p.characters.find(c=>c.id===cid);Object.assign(c.sheetJob,{status,attempts:info.attempt,error:info.error||''});
   if(['done','failed'].includes(status))c.sheetJob.completedAt=new Date().toISOString();
   if(info.result){c.references.push(info.result);c.sheetJob.referenceId=info.result.id;invalidateCharacter(p,c.id);}
@@ -83,9 +92,46 @@ const queue=new Queue({limit:3,retries:2,run:async task=>{
 }});
 async function imageEngine(settings){return {provider:settings.imageProvider,model:settings.imageModel,quality:settings.imageQuality,...(settings.imageProvider==='codex'?{codexModel:(await requireCodexModel(settings)).model}:{})};}
 async function sheetPrompt(p,c,b){
- const resolved=await resolveProjectReferences({...p,characters:[c]},REFERENCE_DIR);
+ const resolved=await resolveProjectReferences({...p,characters:[c],locations:[]},REFERENCE_DIR);
  const selectedStyle=b.useProjectStyle===false?null:await resolveStyleReferences(db.presets.find(s=>s.id===p.defaultStyleId),REFERENCE_DIR);
  return composeCharacterSheet(p,resolved.characters[0],selectedStyle,{stylePrompt:str(b.stylePrompt||'',20000)});
+}
+async function enqueueScenes(p,selected,settings,engine,apiKey,signal){
+ const input=structuredClone(p),fingerprint=generationInputs(p),styleFingerprint=JSON.stringify(db.presets);
+ const tasks=await Promise.all(selected.map(async s=>{const snapshot=input.scenes.find(scene=>scene.id===s.id);return {s,task:{...await scenePrompt(input,snapshot),cue:editingCue(input,snapshot,input.scenes.indexOf(snapshot)),imageVersion:snapshot.images.length+1,aspectRatio:input.aspectRatio,cwd:path.join(DATA,'jobs',id()),engine,apiKey}};}));
+ for(const {task}of tasks)if(engine.provider==='openai')referenceLegend(task.refs);
+ signal?.throwIfAborted();
+ if(fingerprint!==generationInputs(p)||styleFingerprint!==JSON.stringify(db.presets))throw Error('생성 준비 중 대본이나 장면 설정이 변경되었습니다. 다시 생성해 주세요.');
+ const available=tasks.filter(({s})=>!queue.keys.has(`${p.id}/${s.id}`));
+ for(const {s,task}of available){s.status='queued';s.error='';queue.add(`${p.id}/${s.id}`,task);}await save();return available.length;
+}
+async function prepareContinuity(p,selectedIds,settings,engine,apiKey,generateScenes){
+ const controller=new AbortController(),signal=controller.signal,run=p.continuityRun={id:id(),status:'running',phase:'planning',assets:[],startedAt:new Date().toISOString(),provider:settings.textProvider,model:settings.textProvider==='claude'?settings.claudeModel:settings.codexModel,error:''};
+ continuityJobs.set(p.id,controller);await save();
+ void (async()=>{
+  try{
+   if(p.continuityPlan?.fingerprint!==continuityFingerprint(p)){
+    const input=structuredClone(p),prompt=continuityPrompt(input);run.prompt=prompt;
+    if(settings.textProvider==='codex')run.model=(await abortable(requireCodexModel(settings),signal)).model;
+    await save();const planned=await runAnalysis({signal,onPhase:async(phase,attempt)=>{Object.assign(run,{phase:phase==='validating'?'planning':phase,attempt});await save();},execute:async({timeout,signal})=>{
+     const cwd=path.join(DATA,'jobs',id());run.jobId=path.basename(cwd);await save();
+     return (settings.textProvider==='claude'?claudeJSON:codexJSON)({cwd,prompt,schema:continuitySchema,model:run.model,signal,timeout});
+    },validate:result=>{const trial=structuredClone(input);applyContinuityPlan(trial,result);return result;}});
+    if(signal.aborted)throw signal.reason;applyContinuityPlan(p,planned);await save();
+   }
+   const selected=p.scenes.filter(s=>selectedIds.includes(s.id)),missing=missingAnchors(p,selected);
+   run.phase='references';run.assets=missing.map(({kind,entity})=>({kind,entityId:entity.id,name:entity.name,status:'queued'}));await save();
+   const tasks=await Promise.all(missing.map(async({kind,entity})=>({kind,entity,prompt:kind==='characters'?await sheetPrompt(p,entity,{}):composeLocationSheet(p,entity,await resolveStyleReferences(db.presets.find(s=>s.id===p.defaultStyleId),REFERENCE_DIR))})));
+   if(signal.aborted)throw signal.reason;
+   const outcomes=await Promise.allSettled(tasks.map(({kind,entity,prompt})=>queue.submit(`${p.id}/anchor/${kind}/${entity.id}`,{...prompt,engine,apiKey,signal,cwd:path.join(DATA,'jobs',id()),kind:kind==='characters'?'character-sheet':'location-sheet',characterName:entity.name,locationName:entity.name,aspectRatio:'16:9',source:kind==='characters'?SHEET_SOURCE:undefined})));
+   if(signal.aborted)throw signal.reason;const failed=outcomes.find(r=>r.status==='rejected');if(failed)throw failed.reason;
+   // A missing or failed identity reference must never fall back to independent text-only cuts.
+   if(missingAnchors(p,selected).length)throw Error('기준 이미지가 준비되지 않았습니다. 다시 준비해 주세요.');
+   if(generateScenes){run.phase='queuing';await save();await enqueueScenes(p,selected,settings,engine,apiKey,signal);}
+   run.status='done';run.phase='done';
+  }catch(error){run.status=signal.aborted?'cancelled':'failed';run.error=error.message;}
+  finally{run.completedAt=new Date().toISOString();continuityJobs.delete(p.id);await save();}
+ })();return run;
 }
 function characterInput(b,previous){
  const name=str(b.name??previous?.name??'',100).trim(),description=str(b.description??previous?.description??'',10000);
@@ -104,7 +150,7 @@ async function body(req){let b='';for await(const c of req){b+=c;if(b.length>45e
 function send(res,status,data,type='application/json'){res.writeHead(status,{'Content-Type':type,'X-Content-Type-Options':'nosniff','Cache-Control':'no-store','Content-Security-Policy':"default-src 'self'; img-src 'self' blob: https:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'"});res.end(type==='application/json'&&!Buffer.isBuffer(data)?JSON.stringify(data):data);}
 const syncs=new Set();
 async function api(req,res,url){const b=req.method==='GET'?{}:await body(req);const parts=url.pathname.split('/').filter(Boolean).map(part=>decodeURIComponent(part));const [,resource,pid,action,sid]=parts;
- if(resource==='health'&&req.method==='GET')return send(res,200,{application:'scene-studio',version:'1.3.1',root:ROOT});
+ if(resource==='health'&&req.method==='GET')return send(res,200,{application:'scene-studio',version:'1.4.0',root:ROOT});
  if(resource==='status'){
   const settings=db.settings,useCodex=settings.textProvider==='codex'||settings.imageProvider==='codex';
   const [codex,claude,catalog]=await Promise.all([useCodex?authStatus():null,settings.textProvider==='claude'?claudeAuthStatus():null,useCodex?codexModelCatalog():{models:[],error:''}]);if(claude)claude.login=claudeLogin.state();if(codex){codex.login=codexLogin.state();if(!codex.ready)codex.message+='\n[ChatGPT 로그인] 버튼을 눌러 로그인해 주세요.';}const openai=openaiStatus();
@@ -229,16 +275,26 @@ async function api(req,res,url){const b=req.method==='GET'?{}:await body(req);co
   }
   if(action==='scenes'&&req.method==='PUT'){if(busy(p))throw Error('작업 중입니다.');if(!Array.isArray(b.scenes)||b.scenes.length>MAX_SCENES)throw Error('장면 형식 오류');p.scenes=editedScenes(p,b.scenes,p.script);refreshSourceAssignments(p);await save();return send(res,200,p);}
   if(action==='preview'&&req.method==='POST'){const s=p.scenes.find(s=>s.id===b.sceneId);if(!s)throw Error('장면 없음');return send(res,200,await scenePrompt(p,s));}
-  if(action==='generate'&&req.method==='POST'){
-   if(p.analyzing)throw Error('분석 중입니다.');if(sheetBusy(p))throw Error('캐릭터 시트 생성 완료 후 장면을 생성해 주세요.');
+  if(action==='continuity-cancel'&&req.method==='POST'){const controller=continuityJobs.get(p.id);if(!controller)throw Error('준비 중인 작업이 없습니다.');controller.abort(Error('기준 이미지 준비를 중단했습니다. 완성된 기준 이미지는 다음 요청에 재사용됩니다.'));return send(res,202,{cancelled:true});}
+  if((action==='generate'||action==='continuity')&&req.method==='POST'){
+   if(p.analyzing||p.continuityRun?.status==='running')throw Error('분석 또는 기준 이미지 준비 중입니다.');if(sheetBusy(p))throw Error('캐릭터 시트 생성 완료 후 장면을 생성해 주세요.');
    refreshSourceAssignments(p);if(p.sourceMappingError)throw Error(p.sourceMappingError);
-   const selected=b.sceneIds?p.scenes.filter(s=>b.sceneIds.includes(s.id)):p.scenes.filter(s=>!s.images.length||['failed','draft'].includes(s.status));if(!selected.length)throw Error('생성할 장면이 없습니다.');
-   const settings={...db.settings},apiKey=openaiKey(),input=structuredClone(p),inputFingerprint=generationInputs(p),styleFingerprint=JSON.stringify(db.presets);
-   const tasks=await Promise.all(selected.filter(s=>!queue.keys.has(`${p.id}/${s.id}`)).map(async s=>{const snapshot=input.scenes.find(scene=>scene.id===s.id);return {s,task:{...await scenePrompt(input,snapshot),cue:editingCue(input,snapshot,input.scenes.indexOf(snapshot)),imageVersion:snapshot.images.length+1,aspectRatio:input.aspectRatio,cwd:path.join(DATA,'jobs',id())}};}));
-   if(!tasks.length)return send(res,202,{queued:0});const engine=await imageEngine(settings);for(const {task}of tasks)Object.assign(task,{engine,apiKey});
-   if(p.analyzing||sheetBusy(p))throw Error('다른 작업이 시작되었습니다. 완료 후 생성해 주세요.');
-   if(inputFingerprint!==generationInputs(p)||styleFingerprint!==JSON.stringify(db.presets))throw Error('생성 준비 중 대본이나 장면 설정이 변경되었습니다. 다시 생성해 주세요.');
-   const available=tasks.filter(({s})=>!queue.keys.has(`${p.id}/${s.id}`));for(const {s,task}of available){s.status='queued';s.error='';queue.add(`${p.id}/${s.id}`,task);}await save();return send(res,202,{queued:available.length});
+   const selected=action==='continuity'?p.scenes:b.sceneIds?p.scenes.filter(s=>b.sceneIds.includes(s.id)):p.scenes.filter(s=>!s.images.length||['failed','draft'].includes(s.status));if(!selected.length)throw Error('생성할 장면이 없습니다.');
+   const settings={...db.settings},apiKey=openaiKey(),fingerprint=generationInputs(p),styleFingerprint=JSON.stringify(db.presets);
+   await Promise.all(selected.map(s=>scenePrompt(p,s)));const engine=await imageEngine(settings);
+   if(p.analyzing||p.continuityRun?.status==='running'||sheetBusy(p))throw Error('다른 작업이 시작되었습니다. 완료 후 생성해 주세요.');
+   if(fingerprint!==generationInputs(p)||styleFingerprint!==JSON.stringify(db.presets))throw Error('생성 준비 중 대본이나 장면 설정이 변경되었습니다. 다시 생성해 주세요.');
+   const needsPlan=p.continuityPlan?.fingerprint!==continuityFingerprint(p),missing=missingAnchors(p,selected);
+   if(needsPlan||missing.length){if([...queue.keys].some(key=>key.startsWith(p.id+'/')))throw Error('현재 이미지 생성 완료 후 기준 이미지를 준비해 주세요.');const run=await prepareContinuity(p,selected.map(s=>s.id),settings,engine,apiKey,action==='generate');return send(res,202,{preparing:true,runId:run.id});}
+   if(action==='continuity')return send(res,200,{ready:true});
+   return send(res,202,{queued:await enqueueScenes(p,selected,settings,engine,apiKey)});
+  }
+  if(action==='locations'&&sid&&req.method==='PUT'){
+   if(busy(p))throw Error('작업 완료 후 배경을 수정해 주세요.');const l=(p.locations||[]).find(l=>l.id===sid);if(!l)throw Error('배경 장소를 찾을 수 없습니다.');
+   const name=str(b.name??l.name,200).trim(),description=str(b.description??l.description,10000);if(!name||!description.trim())throw Error('배경 이름과 설명을 입력해 주세요.');
+   const uploads=(b.images||[]).map(uploadedImage);if(uploads.length>1)throw Error('배경 기준 이미지는 한 장씩 첨부해 주세요.');
+   const references=uploads.length?[await storeReference(uploads[0],{kind:'location-sheet'})]:b.resetReference?[]:l.references;
+   if(busy(p))throw Error('다른 작업이 시작되었습니다. 완료 후 수정해 주세요.');Object.assign(l,{name,description,references});p.continuityPlan=null;for(const s of p.scenes)if((s.locationIds||[]).includes(l.id))s.status='draft';await save();return send(res,200,l);
   }
   if(action==='editing-export'&&req.method==='GET'){
    const files=editingFiles(structuredClone(p),DATA);for(const entry of files)if(entry.file)await stat(entry.file);

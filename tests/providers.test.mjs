@@ -76,7 +76,7 @@ const args=process.argv.slice(2);
 if(args[0]==='auth'){console.log(JSON.stringify({loggedIn:true,authMethod:'claude.ai'}));process.exit(0);}
 if(process.env.ANTHROPIC_API_KEY)throw Error('API key leaked into Claude CLI');
 let input='';process.stdin.on('data',d=>input+=d).on('end',()=>{
-  const {script}=JSON.parse(input.slice(input.indexOf('{')));
+  const parsed=JSON.parse(input.slice(input.indexOf('{'))),{script}=parsed;if(input.includes('You are a visual continuity planner.')){console.log(JSON.stringify({type:'result',is_error:false,structured_output:{characters:[],locations:[],shots:parsed.scenes.map(s=>({sceneId:s.id,characterIds:[],locationIds:[]}))}}));return;}
   require('fs').writeFileSync(process.cwd()+'/args.json',JSON.stringify(args));
   require('fs').writeFileSync(process.cwd()+'/prompt.txt',input);
   console.log(JSON.stringify({type:'result',is_error:false,structured_output:{scenes:[{title:'장면',sourceText:'골목은 ',camera:'와이드샷',reason:'장소 소개',prompt:'quiet street',characterIds:[]},{title:'단서',sourceText:'조용했다.',camera:'사물 인서트',reason:'같은 문장에서 단서 강조',prompt:'close up of a door handle',characterIds:[]}]}}));

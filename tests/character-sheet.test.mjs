@@ -40,7 +40,7 @@ else {
    if(prompt.includes('You are a storyboard editor.')){
     const input=JSON.parse(prompt.slice(prompt.indexOf('{')));
     fs.writeFileSync(output,JSON.stringify({scenes:[{title:'장면',sourceText:input.script,reason:'하나',prompt:'standing in the rain',characterIds:input.characters.map(c=>c.id)}]}));
-   }else{const file=process.cwd()+'/output.png';fs.writeFileSync(file,Buffer.from('${PNG}','base64'));fs.writeFileSync(output,JSON.stringify({imagePath:file,error:''}));}
+   }else if(prompt.includes('You are a visual continuity planner.')){const input=JSON.parse(prompt.slice(prompt.indexOf('{')));fs.writeFileSync(output,JSON.stringify({characters:[],locations:[],shots:input.scenes.map(s=>({sceneId:s.id,characterIds:s.characterIds,locationIds:[]}))}));}else{const file=process.cwd()+'/output.png';fs.writeFileSync(file,Buffer.from('${PNG}','base64'));fs.writeFileSync(output,JSON.stringify({imagePath:file,error:''}));}
    console.log(JSON.stringify({type:'turn.completed'}));
   },180);
  });
@@ -215,6 +215,7 @@ test('characters can be added and sheets queued during generation, with independ
  for(const c of done.characters.filter(c=>c.sheetJob.status==='done')){const r=c.references.find(r=>r.id===c.sheetJob.referenceId);assert.ok(r);assert.match(r.prompt,new RegExp(c.description));}
  const idle=await add('삭제 가능');assert.equal((await api(base,route+'/characters/'+idle.id,'DELETE',{})).status,200);
  // Character mutations remain protected while a scene itself is generating.
+ await api(base,route+'/characters/'+done.characters[2].id,'DELETE',{});
  await api(base,route,'PUT',{script:'등장인물들이 만났다.'});
  assert.equal((await api(base,route+'/analyze','POST',{})).status,202);
  assert.equal((await api(base,route+'/characters','POST',{name:'분석 중'})).status,400);

@@ -45,8 +45,11 @@ async function start(t,initial,extraEnv={}){
  const dir=await mkdtemp(path.join(tmpdir(),'editing-api-')),data=path.join(dir,'data');await mkdir(data);
  if(initial)await writeFile(path.join(data,'state.json'),JSON.stringify(initial));
  const mock=http.createServer((req,res)=>{req.resume();req.on('end',()=>{res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({data:[{b64_json:PNG.toString('base64')}]}));});});const mockPort=await listen(mock);
+ const binary=path.join(dir,'codex');await writeFile(binary,`#!${process.execPath}
+const fs=require('node:fs');let prompt='';process.stdin.on('data',d=>prompt+=d).on('end',()=>{const input=JSON.parse(prompt.slice(prompt.indexOf('{')));const a=process.argv.slice(2);fs.writeFileSync(a[a.indexOf('-o')+1],JSON.stringify({characters:[],locations:[],shots:input.scenes.map(s=>({sceneId:s.id,characterIds:s.characterIds,locationIds:[]}))}));});
+`);await chmod(binary,0o755);
  const probe=http.createServer(),port=await listen(probe);await new Promise(r=>probe.close(r));
- const child=spawn(process.execPath,['server.mjs'],{cwd:path.resolve(import.meta.dirname,'..'),env:{...process.env,PORT:String(port),SCENE_DATA_DIR:data,SCENE_REFERENCE_DIR:path.join(dir,'refs'),OPENAI_BASE_URL:`http://127.0.0.1:${mockPort}/v1`,...extraEnv},stdio:['ignore','pipe','pipe']});
+ const child=spawn(process.execPath,['server.mjs'],{cwd:path.resolve(import.meta.dirname,'..'),env:{...process.env,PORT:String(port),SCENE_DATA_DIR:data,SCENE_REFERENCE_DIR:path.join(dir,'refs'),OPENAI_BASE_URL:`http://127.0.0.1:${mockPort}/v1`,CODEX_BIN:binary,SCENE_CODEX_MODEL:'gpt-test',...extraEnv},stdio:['ignore','pipe','pipe']});
  let output='';child.stdout.on('data',d=>output+=d);child.stderr.on('data',d=>output+=d);
  t.after(async()=>{child.kill('SIGTERM');await new Promise(r=>mock.close(r));});
  for(let i=0;i<100&&!output.includes('Scene Studio:');i++)await new Promise(r=>setTimeout(r,20));assert.match(output,/Scene Studio:/);
@@ -88,7 +91,7 @@ rl.createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(li
 `);await chmod(binary,0o755);
  const p=fixture(),{base}=await start(t,{projects:[p],presets:[],sources:[],favorites:[]},{CODEX_BIN:binary,SCENE_CODEX_MODEL:''});
  const pending=api(base,'projects/project/generate','POST',{});
- let preparing=false;for(let i=0;i<100;i++){try{await readFile(marker);preparing=true;break;}catch{await new Promise(r=>setTimeout(r,10));}}assert.ok(preparing);
+ let preparing=false;for(let i=0;i<300;i++){try{await readFile(marker);preparing=true;break;}catch{await new Promise(r=>setTimeout(r,10));}}assert.ok(preparing);
  const update=await api(base,'projects/project','PUT',{script:p.script+' 새 대본.'});assert.equal(update.status,200);
  const result=await pending;assert.equal(result.status,400);assert.match(result.body.error,/생성 준비 중 대본/);
  const state=(await api(base,'state')).body.projects[0];assert.ok(state.scenes.every(s=>s.images.length===0&&s.status==='draft'));
