@@ -78,7 +78,8 @@ if(process.env.ANTHROPIC_API_KEY)throw Error('API key leaked into Claude CLI');
 let input='';process.stdin.on('data',d=>input+=d).on('end',()=>{
   const {script}=JSON.parse(input.slice(input.indexOf('{')));
   require('fs').writeFileSync(process.cwd()+'/args.json',JSON.stringify(args));
-  console.log(JSON.stringify({type:'result',is_error:false,structured_output:{scenes:[{title:'장면',sourceText:script,reason:'하나',prompt:'quiet street',characterIds:[]}]}}));
+  require('fs').writeFileSync(process.cwd()+'/prompt.txt',input);
+  console.log(JSON.stringify({type:'result',is_error:false,structured_output:{scenes:[{title:'장면',sourceText:script,continuation:false,camera:'와이드샷',reason:'장소 소개',prompt:'quiet street',characterIds:[]},{title:'단서',sourceText:script,continuation:true,camera:'사물 인서트',reason:'같은 문장에서 단서 강조',prompt:'close up of a door handle',characterIds:[]}]}}));
 });
 `);
   await chmod(fakeClaude, 0o755);
@@ -114,9 +115,14 @@ let input='';process.stdin.on('data',d=>input+=d).on('end',()=>{
 
   const project = (await api(base, 'projects', 'POST', { name: 'providers' })).body;
   await api(base, `projects/${project.id}`, 'PUT', { script: '골목은 조용했다.', aspectRatio: '1:1' });
+  await api(base,`projects/${project.id}/analysis-prompt`,'PUT',{instructions:'단서 인서트를 늘려주세요.',density:'dense'});
+  const expectedPrompt=(await api(base,`projects/${project.id}/analysis-prompt`)).body.prompt;
   assert.equal((await api(base, `projects/${project.id}/analyze`, 'POST', {})).status, 202);
   const analyzed = await waitFor(async () => (await api(base, 'state')).body.projects.find(p => p.id === project.id && !p.analyzing && p.scenes.length));
   assert.equal(analyzed.scenes[0].prompt, 'quiet street');
+  assert.equal(analyzed.scenes.length,2);assert.equal(analyzed.scenes[1].continuation,true);assert.equal(analyzed.scenes[1].camera,'사물 인서트');assert.equal(analyzed.analysisRun.prompt,expectedPrompt);
+  const {readdir}=await import('node:fs/promises');const jobs=await readdir(path.join(data,'jobs'));
+  assert.equal(await readFile(path.join(data,'jobs',jobs[0],'prompt.txt'),'utf8'),expectedPrompt);
 
   assert.equal((await api(base, `projects/${project.id}/generate`, 'POST', {})).status, 202);
   const done = await waitFor(async () => (await api(base, 'state')).body.projects.find(p => p.id === project.id && p.scenes[0].status === 'done'));

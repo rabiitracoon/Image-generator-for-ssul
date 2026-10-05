@@ -10,6 +10,7 @@ import {parseRepo,syncSource} from './lib/presets.mjs';
 import {REFERENCE_FOLDER,migrateReferences,portableReferencePath,resolveProjectReferences,resolveStyleReferences} from './lib/references.mjs';
 import {codexModelCatalog,effectiveCodexModel,requireCodexModel} from './lib/codex-models.mjs';
 import {composeCharacterSheet,SHEET_SOURCE,SHEET_TEMPLATE} from './lib/character-sheet.mjs';
+import {analysisPrompt,analysisSettings,analysisGuide,DEFAULT_ANALYSIS_INSTRUCTIONS,CUT_DENSITIES,MAX_SCENES} from './lib/analysis.mjs';
 const ROOT=path.dirname(fileURLToPath(import.meta.url)),DATA=path.resolve(process.env.SCENE_DATA_DIR||path.join(ROOT,'data')),PORT=Number(process.env.PORT||4317);
 const REFERENCE_DIR=path.resolve(process.env.SCENE_REFERENCE_DIR||path.join(ROOT,REFERENCE_FOLDER));
 await mkdir(DATA,{recursive:true});
@@ -37,7 +38,7 @@ function editedScenes(p, scenes, script) {
  for(const s of scenes)style(s.styleId??null);
  const previous=new Map(p.scenes.map(s=>[s.id,s]));
  return valid.map((v,i)=>{const input=scenes[i],old=previous.get(input.id);const styleId=input.styleId??null;
- const changed=!old||['prompt','sourceText'].some(k=>old[k]!==v[k])||JSON.stringify(old.characterIds)!==JSON.stringify(v.characterIds)||old.styleId!==styleId;
+ const changed=!old||['prompt','sourceText','camera'].some(k=>(old[k]||'')!==v[k])||(old.continuation??false)!==v.continuation||JSON.stringify(old.characterIds)!==JSON.stringify(v.characterIds)||old.styleId!==styleId;
  return {...v,id:old?.id||(/^[a-f0-9-]{36}$/.test(input.id||'')?input.id:v.id),images:old?.images||[],status:changed?'draft':old.status,attempts:old?.attempts||0,error:changed?'':old?.error||'',styleId};});
 }
 const project=(pid)=>{const p=db.projects.find(p=>p.id===pid);if(!p)throw Error('프로젝트를 찾을 수 없습니다.');return p;};
@@ -94,7 +95,7 @@ async function body(req){let b='';for await(const c of req){b+=c;if(b.length>45e
 function send(res,status,data,type='application/json'){res.writeHead(status,{'Content-Type':type,'X-Content-Type-Options':'nosniff','Cache-Control':'no-store','Content-Security-Policy':"default-src 'self'; img-src 'self' blob: https:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'"});res.end(type==='application/json'?JSON.stringify(data):data);}
 const syncs=new Set();
 async function api(req,res,url){const b=req.method==='GET'?{}:await body(req);const parts=url.pathname.split('/').filter(Boolean).map(part=>decodeURIComponent(part));const [,resource,pid,action,sid]=parts;
- if(resource==='health'&&req.method==='GET')return send(res,200,{application:'scene-studio',version:'1.1.1',root:ROOT});
+ if(resource==='health'&&req.method==='GET')return send(res,200,{application:'scene-studio',version:'1.2.0',root:ROOT});
  if(resource==='status'){
   const settings=db.settings,useCodex=settings.textProvider==='codex'||settings.imageProvider==='codex';
   const [codex,claude,catalog]=await Promise.all([useCodex?authStatus():null,settings.textProvider==='claude'?claudeAuthStatus():null,useCodex?codexModelCatalog():{models:[],error:''}]);if(claude)claude.login=claudeLogin.state();if(codex){codex.login=codexLogin.state();if(!codex.ready)codex.message+='\n[ChatGPT 로그인] 버튼을 눌러 로그인해 주세요.';}const openai=openaiStatus();
@@ -181,20 +182,32 @@ async function api(req,res,url){const b=req.method==='GET'?{}:await body(req);co
     queue.add(key,task);await save();return send(res,202,{queued:1,characterId:c.id});
    }finally{preparingSheets.delete(key);}
   }
+  if(action==='analysis-prompt'&&req.method==='GET'){
+   const settings=analysisSettings(p);
+   return send(res,200,{...settings,defaultInstructions:DEFAULT_ANALYSIS_INSTRUCTIONS,densities:Object.entries(CUT_DENSITIES).map(([value,v])=>({value,label:v.label})),prompt:analysisPrompt(p),guide:analysisGuide(p.script,settings.density),lastPrompt:p.analysisRun?.prompt||''});
+  }
+  if(action==='analysis-prompt'&&req.method==='PUT'){
+   if(busy(p))throw Error('작업 완료 후 분석 프롬프트를 저장해 주세요.');
+   p.analysisSettings=analysisSettings(p,b);await save();return send(res,200,p.analysisSettings);
+  }
+  if(action==='analysis-prompt-preview'&&req.method==='POST'){
+   const input={...p,script:str(b.script??p.script),constraints:str(b.constraints??p.constraints)},settings=analysisSettings(p,b);
+   return send(res,200,{prompt:analysisPrompt(input,settings),guide:analysisGuide(input.script,settings.density)});
+  }
   if(action==='analyze'&&req.method==='POST'){
    if(busy(p))throw Error('이미 작업 중입니다.');if(!p.script.trim())throw Error('대본을 입력해 주세요.');
-   const settings={...db.settings},input=structuredClone(p);p.analyzing=true;p.analysisError='';p.analysisRun={provider:settings.textProvider,model:settings.textProvider==='claude'?settings.claudeModel:settings.codexModel||'',status:'running',startedAt:new Date().toISOString()};
+   const settings={...db.settings},input=structuredClone(p),options=analysisSettings(input),prompt=analysisPrompt(input);p.analyzing=true;p.analysisError='';p.analysisRun={provider:settings.textProvider,model:settings.textProvider==='claude'?settings.claudeModel:settings.codexModel||'',prompt,...options,status:'running',startedAt:new Date().toISOString()};
    await save();send(res,202,{accepted:true});(async()=>{
     try{
      const model=settings.textProvider==='claude'?settings.claudeModel:(await requireCodexModel(settings)).model;
-     p.analysisRun.model=model;await save();const job={project:input,model,cwd:path.join(DATA,'jobs',id())};
+     p.analysisRun.model=model;await save();const job={project:input,model,prompt,cwd:path.join(DATA,'jobs',id())};
      const scenes=settings.textProvider==='claude'?await analyzeWithClaude(job):await analyze(job);
      p.scenes=validateScenes(scenes,input.script,input.characters);p.analysisRun.status='done';
     }catch(e){p.analysisError=e.message;p.analysisRun.status='failed';}
     finally{p.analyzing=false;p.analysisRun.completedAt=new Date().toISOString();await save();}
    })();return;
   }
-  if(action==='scenes'&&req.method==='PUT'){if(busy(p))throw Error('작업 중입니다.');if(!Array.isArray(b.scenes)||b.scenes.length>100)throw Error('장면 형식 오류');p.scenes=editedScenes(p,b.scenes,p.script);await save();return send(res,200,p);}
+  if(action==='scenes'&&req.method==='PUT'){if(busy(p))throw Error('작업 중입니다.');if(!Array.isArray(b.scenes)||b.scenes.length>MAX_SCENES)throw Error('장면 형식 오류');p.scenes=editedScenes(p,b.scenes,p.script);await save();return send(res,200,p);}
   if(action==='preview'&&req.method==='POST'){const s=p.scenes.find(s=>s.id===b.sceneId);if(!s)throw Error('장면 없음');return send(res,200,await scenePrompt(p,s));}
   if(action==='generate'&&req.method==='POST'){
    if(p.analyzing)throw Error('분석 중입니다.');if(sheetBusy(p))throw Error('캐릭터 시트 생성 완료 후 장면을 생성해 주세요.');
@@ -217,6 +230,6 @@ const server=http.createServer(async(req,res)=>{try{
  if(req.headers.origin&&!new Set([`http://127.0.0.1:${PORT}`,`http://localhost:${PORT}`]).has(req.headers.origin))return send(res,403,{error:'다른 사이트의 요청은 허용되지 않습니다.'});
  if(!['GET','HEAD'].includes(req.method)&&!req.headers['content-type']?.startsWith('application/json'))return send(res,415,{error:'JSON 요청만 허용됩니다.'});
  const url=new URL(req.url,`http://127.0.0.1:${PORT}`);if(url.pathname.startsWith('/api/'))return await api(req,res,url);
- let file,type;if(url.pathname.startsWith('/media/')){const m=/^\/media\/(images|references)\/([a-f0-9-]+\.(png|jpg|webp))$/.exec(url.pathname);if(!m)return send(res,404,{error:'파일 없음'});file=m[1]==='references'?path.join(REFERENCE_DIR,m[2]):path.join(DATA,'images',m[2]);type=`image/${m[3]==='jpg'?'jpeg':m[3]}`;}else {const routes={'/':['index.html','text/html; charset=utf-8'],'/app.js':['app.js','text/javascript; charset=utf-8'],'/view-model.js':['view-model.js','text/javascript; charset=utf-8'],'/style.css':['style.css','text/css; charset=utf-8'],'/custom-style.css':['custom-style.css','text/css; charset=utf-8']};const r=routes[url.pathname];if(!r)return send(res,404,{error:'파일 없음'});file=path.join(ROOT,'public',r[0]);type=r[1];}send(res,200,await readFile(file),type);
+ let file,type;if(url.pathname.startsWith('/media/')){const m=/^\/media\/(images|references)\/([a-f0-9-]+\.(png|jpg|webp))$/.exec(url.pathname);if(!m)return send(res,404,{error:'파일 없음'});file=m[1]==='references'?path.join(REFERENCE_DIR,m[2]):path.join(DATA,'images',m[2]);type=`image/${m[3]==='jpg'?'jpeg':m[3]}`;}else {const routes={'/':['index.html','text/html; charset=utf-8'],'/app.js':['app.js','text/javascript; charset=utf-8'],'/view-model.js':['view-model.js','text/javascript; charset=utf-8'],'/narration.js':['../lib/narration.mjs','text/javascript; charset=utf-8'],'/style.css':['style.css','text/css; charset=utf-8'],'/custom-style.css':['custom-style.css','text/css; charset=utf-8']};const r=routes[url.pathname];if(!r)return send(res,404,{error:'파일 없음'});file=path.join(ROOT,'public',r[0]);type=r[1];}send(res,200,await readFile(file),type);
  }catch(e){send(res,e.code==='ENOENT'?404:400,{error:e.message});}});
 server.listen(PORT,'127.0.0.1',()=>console.log(`Scene Studio: http://127.0.0.1:${PORT}`));

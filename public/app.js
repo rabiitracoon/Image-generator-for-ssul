@@ -1,10 +1,12 @@
 import {filterScenes,pageItems,characterLocked,projectLocked,sheetProgress} from './view-model.js';
+import {syncContinuations,splitNarration,mergeNarration} from './narration.js';
 let state={projects:[],presets:[],sources:[],favorites:[]};
 let current=localStorage.getItem('scene-project'),dirty=false,tab='script',refreshing=null,saving=false;
 let boardView='focus',gridPage=0,stylePage=0,styleTarget=null,detailId=null;
 const selectedByProject=new Map(),versions=new Map();
 let styleDraft={id:null,references:[],uploads:[]},styleSaving=false,engineStatus=null;
 let characterDraft={id:null,references:[],uploads:[]},characterSaving=false,characterReading=false,sheetCharacterId=null,sheetSubmitting=false;
+let analysisPromptInfo=null,analysisPromptSaving=false;
 const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const p=()=>state.projects.find(x=>x.id===current);
@@ -61,7 +63,7 @@ function renderScenes(){const project=p(),list=matches();let selected=selectedSc
 function sceneEditor(s,index,list){const vi=Math.min(versions.get(s.id)??s.images.length-1,s.images.length-1),im=s.images[vi];const si=list.findIndex(x=>x.id===s.id),effective=s.styleId===null?p().defaultStyleId:s.styleId,style=preset(effective);
  return `<article class="scene" data-id="${s.id}"><div class="scene-head"><span class="scene-number">${String(index+1).padStart(2,'0')}</span><input data-field="title" value="${esc(s.title)}" aria-label="장면 제목"><span class="badge ${s.status}">${sceneStatus(s)}${s.attempts?` · ${s.attempts}회`:''}</span><div class="actions"><button data-prev-scene ${si<=0?'disabled':''} title="이전 장면 (Alt+←)" aria-label="이전 장면">←</button><button data-next-scene ${si+1>=list.length?'disabled':''} title="다음 장면 (Alt+→)" aria-label="다음 장면">→</button></div></div>
  <div class="scene-body"><div class="scene-stage"><div class="scene-image">${imageMarkup(im?.url,s.title,['running','retrying','queued'].includes(s.status)?'✦ '+statuses[s.status]+'…':'이 장면의 첫 이미지를 만들어보세요.')}</div><div class="image-actions">${im?`<select data-history="${s.id}" aria-label="이미지 버전">${s.images.map((v,j)=>`<option value="${j}" ${j===vi?'selected':''}>버전 ${j+1} · ${new Date(v.createdAt).toLocaleTimeString()}</option>`).join('')}</select><a class="button download" href="${im.url}" download>다운로드 ↓</a>`:'<span class="hint">검토한 프롬프트로 이미지를 생성합니다.</span>'}<button data-gen="${s.id}" class="primary" ${locked()?'disabled':''}>${im?'↻ 재생성':'✦ 이미지 생성'}</button></div>${s.error?`<div class="scene-error">${esc(s.error)}</div>`:''}<details class="cut-reason"><summary>장면 전환 이유</summary><p>${esc(s.reason||'사용자가 추가한 장면입니다.')}</p></details></div>
- <div class="scene-fields"><div class="inspector-label">SCENE DETAILS</div><label>대본 구간<textarea data-field="sourceText">${esc(s.sourceText)}</textarea></label><label>이미지 프롬프트<textarea data-field="prompt">${esc(s.prompt)}</textarea></label><div class="field-label">장면 스타일 <small>${s.styleId===null?'프로젝트 기본 적용':'이 장면만 적용'}</small></div><input type="hidden" data-field="styleId" value="${esc(s.styleId===null?'__inherit':s.styleId)}"><button class="scene-style-picker" data-scene-style="${s.id}" ${locked()?'disabled':''}>${imageMarkup(style?.previewUrls?.[0],style?.name||'스타일 없음','▧')}<span><strong>${esc(style?.name||'스타일 없음')}</strong><small>미리보고 다른 스타일 선택 →</small></span></button>${s.styleId!==null?'<button class="text-button" data-inherit-style>프로젝트 기본 스타일로 되돌리기</button>':''}<div class="field-label">등장 캐릭터</div><div class="cast">${p().characters.map(c=>`<label><input type="checkbox" data-cast="${c.id}" ${s.characterIds.includes(c.id)?'checked':''}>${esc(c.name)}</label>`).join('')||'<span class="hint">등록된 캐릭터가 없습니다.</span>'}</div><button data-preview="${s.id}" class="wide secondary">최종 프롬프트 확인</button></div></div>
+ <div class="scene-fields"><div class="inspector-label">SCENE DETAILS</div><label>대본 구간${s.continuation?'<small class="continuation-label">앞 컷과 같은 대본의 추가 연출</small>':''}<textarea data-field="sourceText" ${s.continuation?'readonly':''}>${esc(s.sourceText)}</textarea></label><label>카메라 연출<input data-field="camera" value="${esc(s.camera||'')}" placeholder="예: 풀샷 → 말하는 인물의 바스트샷"></label><label>이미지 프롬프트<textarea data-field="prompt">${esc(s.prompt)}</textarea></label><div class="field-label">장면 스타일 <small>${s.styleId===null?'프로젝트 기본 적용':'이 장면만 적용'}</small></div><input type="hidden" data-field="styleId" value="${esc(s.styleId===null?'__inherit':s.styleId)}"><button class="scene-style-picker" data-scene-style="${s.id}" ${locked()?'disabled':''}>${imageMarkup(style?.previewUrls?.[0],style?.name||'스타일 없음','▧')}<span><strong>${esc(style?.name||'스타일 없음')}</strong><small>미리보고 다른 스타일 선택 →</small></span></button>${s.styleId!==null?'<button class="text-button" data-inherit-style>프로젝트 기본 스타일로 되돌리기</button>':''}<div class="field-label">등장 캐릭터</div><div class="cast">${p().characters.map(c=>`<label><input type="checkbox" data-cast="${c.id}" ${s.characterIds.includes(c.id)?'checked':''}>${esc(c.name)}</label>`).join('')||'<span class="hint">등록된 캐릭터가 없습니다.</span>'}</div><button data-preview="${s.id}" class="wide secondary">최종 프롬프트 확인</button></div></div>
  <div class="scene-foot"><span>장면 ${index+1} / ${p().scenes.length} · 편집 내용은 변경 저장으로 보관됩니다.</span><div class="actions"><button data-split="${s.id}" ${locked()?'disabled':''}>장면 분할</button>${index<p().scenes.length-1?`<button data-merge="${s.id}" ${locked()?'disabled':''}>다음과 병합</button>`:''}</div></div></article>`;
 }
 
@@ -155,7 +157,7 @@ async function refresh(){
   localStorage.setItem('scene-project',current);render();
  })();refreshing=request;try{await request;}finally{if(refreshing===request)refreshing=null;}
 }
-function collect(){const project=p();if(!project)return;Object.assign(project,{name:$('#name').value,script:$('#script-input').value,constraints:$('#constraints').value,aspectRatio:$('#aspect').value,defaultStyleId:$('#default-style').value});$$('.scene').forEach(el=>{const s=project.scenes.find(x=>x.id===el.dataset.id);if(!s)return;el.querySelectorAll('[data-field]').forEach(input=>s[input.dataset.field]=input.value==='__inherit'?null:input.value);s.characterIds=[...el.querySelectorAll('[data-cast]:checked')].map(x=>x.dataset.cast);});}
+function collect(){const project=p();if(!project)return;Object.assign(project,{name:$('#name').value,script:$('#script-input').value,constraints:$('#constraints').value,aspectRatio:$('#aspect').value,defaultStyleId:$('#default-style').value});$$('.scene').forEach(el=>{const s=project.scenes.find(x=>x.id===el.dataset.id);if(!s)return;el.querySelectorAll('[data-field]').forEach(input=>s[input.dataset.field]=input.value==='__inherit'?null:input.value);s.characterIds=[...el.querySelectorAll('[data-cast]:checked')].map(x=>x.dataset.cast);});syncContinuations(project.scenes);}
 async function save(){
  if(saving)throw Error('저장 중입니다. 잠시 기다려 주세요.');
  collect();const {scenes,...fields}=p();saving=true;$('main').inert=true;$('.app-sidebar').inert=true;$('main').setAttribute('aria-busy','true');$('#save-state').textContent='저장 중…';
@@ -174,7 +176,33 @@ $$('#name,#script-input,#constraints,#aspect').forEach(el=>el.addEventListener('
 $('#scene-list').addEventListener('input',e=>{if(!e.target.dataset.history)mark();});
 $('#choose-project-style').onclick=()=>openStyles();
 $('#project-style-card').onclick=e=>action(async()=>{if(e.target.closest('[data-project-style-clear]')){if(locked())throw Error('작업 완료 후 수정해 주세요.');collect();p().defaultStyleId='';$('#default-style').value='';mark();renderProjectStyle();renderScenes();}});
-$('#analyze').onclick=()=>action(async()=>{if(p().scenes.length&&!await ask('대본을 다시 분석할까요?',[],'현재 장면 편집과 이미지 연결은 새 분석 결과로 바뀝니다. 기존 이미지 파일은 로컬에 남습니다.'))return;collect();const {scenes,...fields}=p();await api(`projects/${current}`,'PUT',fields);dirty=false;await api(`projects/${current}/analyze`,'POST',{});await refresh();showTab('scenes');});
+$('#analyze').onclick=()=>action(async()=>{if(p().scenes.length&&!await ask('대본을 다시 분석할까요?',[],'현재 장면 편집과 이미지 연결은 새 분석 결과로 바뀝니다. 기존 이미지 파일은 로컬에 남습니다.'))return;collect();const {scenes,...fields}=p();await api(`projects/${current}`,'PUT',fields);dirty=false;$('#save-state').textContent='저장됨';await api(`projects/${current}/analyze`,'POST',{});await refresh();showTab('scenes');});
+const analysisDraft=()=>({instructions:$('#analysis-instructions').value,density:$('#analysis-density').value,script:$('#script-input').value,constraints:$('#constraints').value});
+async function previewAnalysisPrompt(){
+ const result=await api(`projects/${current}/analysis-prompt-preview`,'POST',analysisDraft());
+ $('#analysis-full-prompt').textContent=result.prompt;$('#analysis-guide').textContent=`참고 ${result.guide.minCuts}~${result.guide.maxCuts}컷 · 이야기의 행동·대사·반응에 따라 컷 수가 달라집니다.`;
+ $('#analysis-prompt-status').textContent=locked()?'작업 중에는 확인만 가능합니다. 완료 후 설정을 저장해 주세요.':'';
+}
+$('#edit-analysis-prompt').onclick=()=>action(async()=>{
+ collect();analysisPromptInfo=await api(`projects/${current}/analysis-prompt`);
+ $('#analysis-density').innerHTML=analysisPromptInfo.densities.map(v=>`<option value="${esc(v.value)}">${esc(v.label)}</option>`).join('');$('#analysis-density').value=analysisPromptInfo.density;
+ $('#analysis-instructions').value=analysisPromptInfo.instructions;$('#analysis-last-prompt').textContent=analysisPromptInfo.lastPrompt||'아직 기록된 분석 프롬프트가 없습니다.';
+ $('#analysis-preview-details').open=false;$('#analysis-history-details').open=false;
+ $('#analysis-prompt-save').disabled=locked();$('#analysis-prompt-reset').disabled=locked();$('#analysis-instructions').readOnly=locked();$('#analysis-density').disabled=locked();
+ await previewAnalysisPrompt();$('#analysis-prompt-modal').showModal();
+});
+$('#analysis-prompt-preview').onclick=()=>action(async()=>{try{await previewAnalysisPrompt();}catch(error){$('#analysis-prompt-status').textContent=error.message;throw error;}});
+$('#analysis-density').onchange=()=>action(previewAnalysisPrompt);
+$('#analysis-instructions').oninput=()=>{$('#analysis-prompt-status').textContent='지시문을 수정했습니다. 미리보기를 갱신한 뒤 설정을 저장해 주세요.';};
+$('#analysis-prompt-reset').onclick=()=>action(async()=>{$('#analysis-instructions').value=analysisPromptInfo.defaultInstructions;$('#analysis-density').value='dynamic';await previewAnalysisPrompt();});
+$('#analysis-prompt-cancel').onclick=()=>{if(!analysisPromptSaving)$('#analysis-prompt-modal').close();};
+$('#analysis-prompt-modal').addEventListener('cancel',e=>{if(analysisPromptSaving)e.preventDefault();});
+$('#analysis-prompt-form').onsubmit=e=>{e.preventDefault();if(analysisPromptSaving)return;action(async()=>{
+ analysisPromptSaving=true;$('#analysis-prompt-form').querySelectorAll('button,input,textarea,select').forEach(el=>el.disabled=true);
+ try{const {instructions,density}=analysisDraft(),settings=await api(`projects/${current}/analysis-prompt`,'PUT',{instructions,density});p().analysisSettings=settings;$('#analysis-prompt-modal').close();renderAnalysisModel();notice('분석 설정을 저장했습니다. 다음 대본 분석부터 적용됩니다.');}
+ catch(error){$('#analysis-prompt-status').textContent=error.message;throw error;}
+ finally{analysisPromptSaving=false;$('#analysis-prompt-form').querySelectorAll('button,input,textarea,select').forEach(el=>el.disabled=false);$('#analysis-prompt-save').disabled=locked();}
+});};
 $('#generate').onclick=()=>action(async()=>{await save();await api(`projects/${current}/generate`,'POST',{});await refresh();});
 function releaseCharacterUploads(){for(const upload of characterDraft.uploads)URL.revokeObjectURL(upload.previewUrl);}
 function renderCharacterDraft(){
@@ -261,8 +289,8 @@ $('#scene-list').onclick=e=>action(async()=>{const b=e.target.closest('button');
  const sid=b.dataset.gen||b.dataset.preview||b.dataset.split||b.dataset.merge;if(!sid)return;collect();const scene=p().scenes.find(s=>s.id===sid),index=p().scenes.indexOf(scene);
  if(b.dataset.gen){await save();versions.delete(sid);await api(`projects/${current}/generate`,'POST',{sceneIds:[sid]});await refresh();}
  if(b.dataset.preview){if(!locked())await save();const r=await api(`projects/${current}/preview`,'POST',{sceneId:sid});modal('최종 이미지 프롬프트',r.prompt);}
- if(b.dataset.split){const answer=await ask('장면 분할',[{key:'boundary',label:'새 장면이 시작할 정확한 원문 구절'}],'입력한 구절부터 다음 장면으로 옮깁니다. 분할 후 각 프롬프트를 다듬어 주세요.');if(!answer)return;const n=scene.sourceText.indexOf(answer.boundary);if(n<=0)throw Error('현재 장면 중간에 있는 정확한 원문 구절을 입력해 주세요.');const next={...structuredClone(scene),id:crypto.randomUUID(),title:scene.title+' (후반)',sourceText:scene.sourceText.slice(n),status:'draft',images:[]};scene.sourceText=scene.sourceText.slice(0,n);scene.status='draft';p().scenes.splice(index+1,0,next);selectedByProject.set(current,next.id);mark();renderScenes();}
- if(b.dataset.merge){const next=p().scenes[index+1];scene.sourceText+=' '+next.sourceText;scene.prompt+='\n'+next.prompt;scene.characterIds=[...new Set([...scene.characterIds,...next.characterIds])];scene.status='draft';p().scenes.splice(index+1,1);mark();renderScenes();}
+ if(b.dataset.split){const answer=await ask('장면 분할',[{key:'boundary',label:'새 장면이 시작할 정확한 원문 구절'}],'입력한 구절부터 다음 장면으로 옮깁니다. 분할 후 각 프롬프트를 다듬어 주세요.');if(!answer)return;const n=scene.sourceText.indexOf(answer.boundary);if(n<=0)throw Error('현재 장면 중간에 있는 정확한 원문 구절을 입력해 주세요.');const next={...structuredClone(scene),id:crypto.randomUUID(),title:scene.title+' (후반)',sourceText:splitNarration(p().scenes,index,n),continuation:false,status:'draft',images:[]};scene.status='draft';p().scenes.splice(index+1,0,next);selectedByProject.set(current,next.id);mark();renderScenes();}
+ if(b.dataset.merge){const next=p().scenes[index+1];mergeNarration(p().scenes,index);scene.prompt+='\n'+next.prompt;scene.characterIds=[...new Set([...scene.characterIds,...next.characterIds])];scene.status='draft';p().scenes.splice(index+1,1);mark();renderScenes();}
 });
 $('#scene-list').addEventListener('change',e=>{if(!e.target.dataset.history)return;versions.set(e.target.dataset.history,Number(e.target.value));collect();renderScenes();});
 $('#source-form').onsubmit=e=>{e.preventDefault();action(async()=>{const b=e.target.querySelector('button');b.disabled=true;try{const s=await api('sources','POST',{url:$('#repo-url').value.trim(),ref:$('#repo-ref').value.trim()});notice('프리셋과 예시 이미지 링크 동기화 중…');await api(`sources/${s.id}/sync`,'POST',{});await refresh();renderStyles();notice('프리셋과 예시 이미지 동기화 완료');}finally{b.disabled=false;}});};
@@ -283,6 +311,7 @@ function renderAnalysisModel(){
  const settings=state.settings||engineStatus?.settings;if(!settings)return;
  const model=settings.textProvider==='claude'?settings.claudeModel:settings.codexModel||engineStatus?.codexModel?.model;
  $('#analysis-model').textContent=`분석 모델: ${settings.textProvider==='claude'?'Claude':'GPT'} · ${model||'확인 필요'}${settings.textProvider==='codex'&&!settings.codexModel?' (기본 모델)':''}`;
+ const labels={balanced:'차분한 전환',dynamic:'풍부한 컷 · 기본',dense:'매우 촘촘한 전환'};$('#analysis-cut-summary').textContent=`컷 구성: ${labels[p()?.analysisSettings?.density||'dynamic']} · ${p()?.analysisSettings?'저장한 지시문':'기본 지시문'}`;
  const run=p()?.analysisRun;$('#last-analysis-model').textContent=run?`${run.status==='running'?'현재 분석':run.status==='done'?'최근 분석':'최근 분석 실패'}: ${run.provider==='claude'?'Claude':'GPT'} · ${run.model||'모델 확인 중'}`:'';
 }
 function showEngine(status){const s=status.settings,api=s.imageProvider==='openai';

@@ -65,5 +65,12 @@
 .model-catalog-row .hint{overflow-wrap:anywhere}
 #engine-summary{white-space:pre-line;overflow-wrap:anywhere}
 #settings-modal{max-height:92dvh}
+#analysis-prompt-modal{max-width:850px;max-height:92dvh}
+#analysis-prompt-modal label{display:block;font-size:12px;font-weight:600;margin:16px 0}
+#analysis-instructions{min-height:300px;resize:vertical;line-height:1.7}
+#analysis-prompt-modal summary{cursor:pointer;font-size:12px;margin:18px 0}
+#analysis-full-prompt,#analysis-last-prompt{max-height:350px;overflow:auto;padding:14px;border-radius:7px;background:#f2f5ef;white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;line-height:1.65}
+.continuation-label{display:block;margin:5px 0;color:#56764f;font-size:10px;font-weight:400}
+#analysis-cut-summary{margin-top:12px}
 @media(max-width:1000px){.character-heading-actions{gap:8px}.section-heading{flex-wrap:wrap}}
 @media(max-width:760px){.character-file-row{flex-direction:column;align-items:stretch}.character-file-row>select{width:100%}#character-modal .dialog-actions{flex-wrap:wrap}.characters{grid-template-columns:1fr}.character-heading-actions{justify-content:flex-start}}

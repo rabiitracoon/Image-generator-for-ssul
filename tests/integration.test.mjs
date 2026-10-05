@@ -89,6 +89,24 @@ test('scenes PUT preserves requested IDs and rejects narration coverage gaps wit
   );
 });
 
+test('analysis prompt settings persist per project and preview unsaved inputs without changing the project',async t=>{
+ const {child,base}=await startServer();t.after(()=>child.kill('SIGTERM'));
+ const p=(await api(base,'projects','POST',{name:'프롬프트 편집'})).body,route=`projects/${p.id}`;
+ const defaults=(await api(base,route+'/analysis-prompt')).body;assert.equal(defaults.density,'dynamic');assert.match(defaults.instructions,/바스트샷/);
+ const saved=await api(base,route+'/analysis-prompt','PUT',{instructions:'리액션 클로즈업을 늘려주세요.',density:'dense'});assert.equal(saved.status,200);
+ const preview=await api(base,route+'/analysis-prompt-preview','POST',{instructions:'미리보기만 적용',density:'balanced',script:'문이 열리고 민지가 웃었다.',constraints:'글자 없음'});
+ assert.equal(preview.status,200);assert.match(preview.body.prompt,/미리보기만 적용/);assert.match(preview.body.prompt,/문이 열리고 민지가 웃었다/);
+ const stored=(await api(base,route+'/analysis-prompt')).body;assert.equal(stored.instructions,'리액션 클로즈업을 늘려주세요.');assert.equal(stored.density,'dense');
+ assert.equal((await api(base,'state')).body.projects[0].script,'');
+ assert.equal((await api(base,route+'/analysis-prompt','PUT',{instructions:''})).status,400);
+ assert.equal((await api(base,route+'/analysis-prompt','PUT',{density:'bad'})).status,400);
+ const p2=(await api(base,'projects','POST',{name:'별도 프로젝트'})).body;assert.equal((await api(base,`projects/${p2.id}/analysis-prompt`)).body.instructions,defaults.instructions);
+ const script='민지가 말했다.',scenes=[{title:'풀샷',sourceText:script,camera:'풀샷',prompt:'wide shot',characterIds:[],continuation:false,styleId:null},{title:'대사',sourceText:script,camera:'바스트샷',prompt:'bust shot',characterIds:[],continuation:true,styleId:null}];
+ await api(base,route,'PUT',{script});assert.equal((await api(base,route+'/scenes','PUT',{scenes})).status,200);
+ const state=(await api(base,'state')).body.projects[0];assert.equal(state.scenes.length,2);assert.equal(state.scenes[1].continuation,true);assert.equal(state.scenes[1].camera,'바스트샷');
+ const generation=(await api(base,route+'/preview','POST',{sceneId:state.scenes[1].id})).body;assert.match(generation.prompt,/Camera direction: 바스트샷/);
+});
+
 test('text and image-only custom styles are editable; scene previews carry style images and character sheets', async t => {
   const {child,data,referenceDir,base}=await startServer();
   t.after(()=>child.kill('SIGTERM'));

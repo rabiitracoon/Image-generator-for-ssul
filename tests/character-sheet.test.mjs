@@ -104,10 +104,15 @@ test('selected GPT reaches analysis and image control; generated sheet auto-regi
  const c=(await api(base,`projects/${p.id}/characters`,'POST',{name:'민지',description:'검은 단발, 노란 우비',images:[image]})).body;
  const style=(await api(base,'styles','POST',{name:'수채화',prompt:'warm watercolor',images:[image]})).body;
  await api(base,`projects/${p.id}`,'PUT',{script:'민지가 비를 바라봤다.',defaultStyleId:style.id});
+ await api(base,`projects/${p.id}/analysis-prompt`,'PUT',{instructions:'클로즈업과 반응샷을 더 많이 사용하세요.',density:'dense'});
+ const expectedPrompt=(await api(base,`projects/${p.id}/analysis-prompt`)).body.prompt;
  assert.equal((await api(base,`projects/${p.id}/analyze`,'POST',{})).status,202);
+ assert.equal((await api(base,`projects/${p.id}/analysis-prompt`,'PUT',{instructions:'작업 중 변경'})).status,400);
  await api(base,'settings','PUT',{codexModel:'gpt-test-default'});
  const analyzed=await waitFor(async()=>{const p=(await api(base,'state')).body.projects[0];return !p.analyzing&&p.scenes.length&&p;});
  assert.equal(analyzed.analysisRun.model,'gpt-test-other');assert.equal(analyzed.analysisRun.status,'done');
+ assert.equal(analyzed.analysisRun.prompt,expectedPrompt);assert.equal(analyzed.analysisRun.density,'dense');
+ assert.equal((await api(base,`projects/${p.id}/analysis-prompt`)).body.lastPrompt,expectedPrompt);
  const preview=(await api(base,`projects/${p.id}/character-sheet-preview`,'POST',{characterId:c.id})).body;
  assert.equal(preview.refs.length,2);assert.match(preview.prompt,/warm watercolor/);
  const noStyle=(await api(base,`projects/${p.id}/character-sheet-preview`,'POST',{characterId:c.id,useProjectStyle:false,stylePrompt:'flat 2D'})).body;
@@ -125,6 +130,7 @@ test('selected GPT reaches analysis and image control; generated sheet auto-regi
  assert.ok(!repeat.refs.some(r=>r.prompt));assert.equal(repeat.prompt.split('REFERENCE-SHEET TEMPLATE').length,2);
  const {readdir}=await import('node:fs/promises');const received=await Promise.all((await readdir(path.join(data,'jobs'))).map(async name=>JSON.parse(await readFile(path.join(data,'jobs',name,'received.json'),'utf8'))));
  const analysis=received.find(r=>r.prompt.startsWith('You are a storyboard editor.'));assert.equal(analysis.args[analysis.args.indexOf('-m')+1],'gpt-test-other');
+ assert.equal(analysis.prompt,expectedPrompt);
  const sheet=received.find(r=>r.prompt.includes('REFERENCE-SHEET TEMPLATE'));assert.equal(sheet.args[sheet.args.indexOf('-m')+1],'gpt-test-default');assert.equal(sheet.args.filter(v=>v==='-i').length,2);
  assert.ok(!(await readFile(path.join(data,'state.json'),'utf8')).includes('must-not-pass'));
 });
