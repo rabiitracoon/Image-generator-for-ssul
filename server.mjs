@@ -16,6 +16,7 @@ import {analysisPrompt,analysisSettings,analysisGuide,DEFAULT_ANALYSIS_INSTRUCTI
 import {refreshSourceAssignments} from './lib/narration.mjs';
 import {editingCue,editingManifest,editingFiles,imageDownloadName} from './lib/editing-export.mjs';
 import {zipEntries} from './lib/zip.mjs';
+import {runAnalysis,analysisCancelled,abortable,ANALYSIS_TIMEOUT_MS} from './lib/analysis-job.mjs';
 const ROOT=path.dirname(fileURLToPath(import.meta.url)),DATA=path.resolve(process.env.SCENE_DATA_DIR||path.join(ROOT,'data')),PORT=Number(process.env.PORT||4317);
 const REFERENCE_DIR=path.resolve(process.env.SCENE_REFERENCE_DIR||path.join(ROOT,REFERENCE_FOLDER));
 await mkdir(DATA,{recursive:true});
@@ -53,7 +54,7 @@ const scenePrompt=async(p,s)=>{
  const selectedStyle=await resolveStyleReferences(db.presets.find(style=>style.id===styleId),REFERENCE_DIR);
  return composePrompt(await resolveProjectReferences({...p,characters:p.characters.filter(c=>s.characterIds.includes(c.id))},REFERENCE_DIR),s,selectedStyle?[selectedStyle]:db.presets);
 };
-const preparingSheets=new Set();
+const preparingSheets=new Set(),analysisJobs=new Map();
 const sheetKey=(p,c)=>`${p.id}/sheet/${c.id}`;
 const sceneBusy=p=>p.analyzing||[...queue.keys].some(key=>key.startsWith(p.id+'/')&&!key.startsWith(p.id+'/sheet/'));
 const sheetBusy=p=>[...queue.keys,...preparingSheets].some(key=>key.startsWith(p.id+'/sheet/'));
@@ -103,7 +104,7 @@ async function body(req){let b='';for await(const c of req){b+=c;if(b.length>45e
 function send(res,status,data,type='application/json'){res.writeHead(status,{'Content-Type':type,'X-Content-Type-Options':'nosniff','Cache-Control':'no-store','Content-Security-Policy':"default-src 'self'; img-src 'self' blob: https:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'"});res.end(type==='application/json'&&!Buffer.isBuffer(data)?JSON.stringify(data):data);}
 const syncs=new Set();
 async function api(req,res,url){const b=req.method==='GET'?{}:await body(req);const parts=url.pathname.split('/').filter(Boolean).map(part=>decodeURIComponent(part));const [,resource,pid,action,sid]=parts;
- if(resource==='health'&&req.method==='GET')return send(res,200,{application:'scene-studio',version:'1.3.0',root:ROOT});
+ if(resource==='health'&&req.method==='GET')return send(res,200,{application:'scene-studio',version:'1.3.1',root:ROOT});
  if(resource==='status'){
   const settings=db.settings,useCodex=settings.textProvider==='codex'||settings.imageProvider==='codex';
   const [codex,claude,catalog]=await Promise.all([useCodex?authStatus():null,settings.textProvider==='claude'?claudeAuthStatus():null,useCodex?codexModelCatalog():{models:[],error:''}]);if(claude)claude.login=claudeLogin.state();if(codex){codex.login=codexLogin.state();if(!codex.ready)codex.message+='\n[ChatGPT 로그인] 버튼을 눌러 로그인해 주세요.';}const openai=openaiStatus();
@@ -202,17 +203,28 @@ async function api(req,res,url){const b=req.method==='GET'?{}:await body(req);co
    const input={...p,script:str(b.script??p.script),constraints:str(b.constraints??p.constraints)},settings=analysisSettings(p,b);
    return send(res,200,{prompt:analysisPrompt(input,settings),guide:analysisGuide(input.script,settings.density)});
   }
+  if(action==='analysis-cancel'&&req.method==='POST'){
+   const job=analysisJobs.get(p.id);if(!job)return send(res,200,{cancelled:false});
+   job.abort(analysisCancelled());return send(res,202,{cancelled:true});
+  }
   if(action==='analyze'&&req.method==='POST'){
    if(busy(p))throw Error('이미 작업 중입니다.');if(!p.script.trim())throw Error('대본을 입력해 주세요.');
-   const settings={...db.settings},input=structuredClone(p),options=analysisSettings(input),prompt=analysisPrompt(input);p.analyzing=true;p.analysisError='';p.analysisRun={provider:settings.textProvider,model:settings.textProvider==='claude'?settings.claudeModel:settings.codexModel||'',prompt,...options,status:'running',startedAt:new Date().toISOString()};
-   await save();send(res,202,{accepted:true});(async()=>{
+   const settings={...db.settings},input=structuredClone(p),options=analysisSettings(input),prompt=analysisPrompt(input),controller=new AbortController(),runId=id();
+   p.analyzing=true;p.analysisError='';p.analysisRun={id:runId,provider:settings.textProvider,model:settings.textProvider==='claude'?settings.claudeModel:settings.codexModel||'',prompt,...options,status:'running',phase:'preparing',attempt:1,maxAttempts:2,timeoutMs:ANALYSIS_TIMEOUT_MS,startedAt:new Date().toISOString()};analysisJobs.set(p.id,controller);
+   try{await save();}catch(error){p.analyzing=false;p.analysisRun.status='failed';analysisJobs.delete(p.id);throw error;}
+   send(res,202,{accepted:true,runId});(async()=>{
     try{
-     const model=settings.textProvider==='claude'?settings.claudeModel:(await requireCodexModel(settings)).model;
-     p.analysisRun.model=model;await save();const job={project:input,model,prompt,cwd:path.join(DATA,'jobs',id())};
-     const scenes=settings.textProvider==='claude'?await analyzeWithClaude(job):await analyze(job);
-     p.scenes=validateScenes(scenes,input.script,input.characters);refreshSourceAssignments(p);p.analysisRun.status='done';
-    }catch(e){p.analysisError=e.message;p.analysisRun.status='failed';}
-    finally{p.analyzing=false;p.analysisRun.completedAt=new Date().toISOString();await save();}
+     controller.signal.throwIfAborted();const model=settings.textProvider==='claude'?settings.claudeModel:(await abortable(requireCodexModel(settings),controller.signal)).model;
+     controller.signal.throwIfAborted();p.analysisRun.model=model;await save();
+     const scenes=await runAnalysis({signal:controller.signal,
+      onPhase:async(phase,attempt)=>{p.analysisRun.phase=phase;p.analysisRun.attempt=attempt;await save();},
+      execute:async({signal,timeout,attempt})=>{
+       const cwd=path.join(DATA,'jobs',id());p.analysisRun.jobId=path.basename(cwd);await save();signal.throwIfAborted();
+       const job={project:input,model,prompt,cwd,signal,timeout};return settings.textProvider==='claude'?analyzeWithClaude(job):analyze(job);
+      },validate:scenes=>validateScenes(scenes,input.script,input.characters)});
+     controller.signal.throwIfAborted();p.scenes=scenes;refreshSourceAssignments(p);p.analysisRun.status='done';p.analysisRun.phase='done';
+    }catch(error){p.analysisError=error.message;p.analysisRun.status=controller.signal.aborted?'cancelled':'failed';p.analysisRun.phase=p.analysisRun.status;}
+    finally{p.analyzing=false;p.analysisRun.completedAt=new Date().toISOString();analysisJobs.delete(p.id);await save();}
    })();return;
   }
   if(action==='scenes'&&req.method==='PUT'){if(busy(p))throw Error('작업 중입니다.');if(!Array.isArray(b.scenes)||b.scenes.length>MAX_SCENES)throw Error('장면 형식 오류');p.scenes=editedScenes(p,b.scenes,p.script);refreshSourceAssignments(p);await save();return send(res,200,p);}

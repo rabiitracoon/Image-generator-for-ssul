@@ -1,4 +1,4 @@
-import {filterScenes,pageItems,characterLocked,projectLocked,sheetProgress} from './view-model.js';
+import {filterScenes,pageItems,characterLocked,projectLocked,sheetProgress,mergeProjectProgress,analysisProgress} from './view-model.js';
 import {refreshSourceAssignments,splitNarration,mergeNarration} from './narration.js';
 let state={projects:[],presets:[],sources:[],favorites:[]};
 let current=localStorage.getItem('scene-project'),dirty=false,tab='script',refreshing=null,saving=false;
@@ -30,7 +30,7 @@ function render(){const project=p();$('#projects').innerHTML=state.projects.map(
  $('#analyze').textContent=project.analyzing?'✦ 장면 분석 중…':'✦ AI 장면 분석';$('#analyze').disabled=locked();$('#generate').disabled=locked()||!project.scenes.length||!!project.sourceMappingError;
  ['#add-scene','#save','#name','#script-input','#constraints','#aspect'].forEach(s=>$(s).disabled=locked());
  ['#add-character','#create-character-sheet'].forEach(s=>$(s).disabled=characterLocked(project));
- renderAnalysisModel();
+ renderAnalysisModel();renderAnalysisProgress();
  renderProjectStyle();
  renderCharacters(project);
  renderScenes();renderStyles();$('#source-mapping-error').textContent=project.sourceMappingError?'이전 분석의 대본 구간이 겹치거나 누락되어 있습니다. 대본을 다시 분석하거나 각 컷에 서로 겹치지 않는 구절을 배정해 주세요.': '';$('#source-mapping-error').classList.toggle('hidden',!project.sourceMappingError);if(project.analysisError)notice(project.analysisError);
@@ -151,7 +151,7 @@ async function refresh(){
   if(dirty){
    collect();state.presets=next.presets;state.sources=next.sources;state.favorites=next.favorites;state.settings=next.settings;
    const remote=next.projects.find(x=>x.id===current),local=p();
-   if(remote&&local){local.characters=remote.characters;for(const key of ['analyzing','analysisRun','analysisError'])local[key]=remote[key];for(const scene of local.scenes){const updated=remote.scenes.find(s=>s.id===scene.id);if(updated)for(const key of ['status','images','attempts','error'])scene[key]=updated[key];}}
+   if(remote&&local)mergeProjectProgress(local,remote);
   }else state=next;
   if(!p())current=state.projects[0]?.id;if(!p()){const created=await api('projects','POST',{name:'나의 첫 스토리보드'});state.projects.push(created);current=created.id;}
   localStorage.setItem('scene-project',current);render();
@@ -185,7 +185,9 @@ $$('#name,#script-input,#constraints,#aspect').forEach(el=>el.addEventListener('
 $('#scene-list').addEventListener('input',e=>{if(!e.target.dataset.history)mark();if(e.target.dataset.field==='sourceText')$('.source-cue').textContent='변경 저장 후 삽입 위치가 다시 계산됩니다.';});
 $('#choose-project-style').onclick=()=>openStyles();
 $('#project-style-card').onclick=e=>action(async()=>{if(e.target.closest('[data-project-style-clear]')){if(locked())throw Error('작업 완료 후 수정해 주세요.');collect();p().defaultStyleId='';$('#default-style').value='';mark();renderProjectStyle();renderScenes();}});
-$('#analyze').onclick=()=>action(async()=>{if(p().scenes.length&&!await ask('대본을 다시 분석할까요?',[],'현재 장면 편집과 이미지 연결은 새 분석 결과로 바뀝니다. 기존 이미지 파일은 로컬에 남습니다.'))return;collect();const {scenes,...fields}=p();await api(`projects/${current}`,'PUT',fields);dirty=false;$('#save-state').textContent='저장됨';await api(`projects/${current}/analyze`,'POST',{});await refresh();showTab('scenes');});
+$('#analyze').onclick=()=>action(async()=>{if(p().scenes.length&&!await ask('대본을 다시 분석할까요?',[],'현재 장면 편집과 이미지 연결은 새 분석 결과로 바뀝니다. 기존 이미지 파일은 로컬에 남습니다.'))return;collect();const {scenes,...fields}=p();await api(`projects/${current}`,'PUT',fields);dirty=false;$('#save-state').textContent='저장됨';await api(`projects/${current}/analyze`,'POST',{});selectedByProject.delete(current);$('#scene-search').value='';$('#scene-filter').value='all';await refresh();showTab('scenes');});
+$('#cancel-analysis').onclick=()=>action(async()=>{const button=$('#cancel-analysis');button.disabled=true;try{await api(`projects/${current}/analysis-cancel`,'POST',{});await refresh();}finally{button.disabled=false;}});
+function renderAnalysisProgress(){const active=!!p()?.analyzing;$('#analysis-progress-banner').classList.toggle('hidden',!active);$('#analysis-progress-text').textContent=analysisProgress(p());$('#cancel-analysis').disabled=!active;}
 const analysisDraft=()=>({instructions:$('#analysis-instructions').value,density:$('#analysis-density').value,script:$('#script-input').value,constraints:$('#constraints').value});
 async function previewAnalysisPrompt(){
  const result=await api(`projects/${current}/analysis-prompt-preview`,'POST',analysisDraft());
@@ -321,7 +323,7 @@ function renderAnalysisModel(){
  const model=settings.textProvider==='claude'?settings.claudeModel:settings.codexModel||engineStatus?.codexModel?.model;
  $('#analysis-model').textContent=`분석 모델: ${settings.textProvider==='claude'?'Claude':'GPT'} · ${model||'확인 필요'}${settings.textProvider==='codex'&&!settings.codexModel?' (기본 모델)':''}`;
  const labels={balanced:'차분한 전환',dynamic:'풍부한 컷 · 기본',dense:'매우 촘촘한 전환'};$('#analysis-cut-summary').textContent=`컷 구성: ${labels[p()?.analysisSettings?.density||'dynamic']} · ${p()?.analysisSettings?'저장한 지시문':'기본 지시문'}`;
- const run=p()?.analysisRun;$('#last-analysis-model').textContent=run?`${run.status==='running'?'현재 분석':run.status==='done'?'최근 분석':'최근 분석 실패'}: ${run.provider==='claude'?'Claude':'GPT'} · ${run.model||'모델 확인 중'}`:'';
+ const run=p()?.analysisRun;$('#last-analysis-model').textContent=run?`${run.status==='running'?'현재 분석':run.status==='done'?'최근 분석':run.status==='cancelled'?'최근 분석 중단':'최근 분석 실패'}: ${run.provider==='claude'?'Claude':'GPT'} · ${run.model||'모델 확인 중'}`:'';
 }
 function showEngine(status){const s=status.settings,api=s.imageProvider==='openai';
  engineStatus=status;state.settings=s;renderAnalysisModel();
@@ -383,5 +385,6 @@ $('#settings-form').onsubmit=e=>{e.preventDefault();action(async()=>{const butto
   if(status.ready){$('#settings-modal').close();notice('AI 설정을 저장했습니다.');}}
  catch(error){$('#image-status').textContent=error.message;throw error;}
  finally{button.disabled=false;}});};
-await action(async()=>{await refresh();await checkStatus();});
+setInterval(()=>{if(p()?.analyzing)renderAnalysisProgress();},1000);
 setInterval(()=>{if(locked())action(refresh);},2500);
+await action(async()=>{await refresh();await checkStatus();});

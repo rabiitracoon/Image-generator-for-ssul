@@ -14,3 +14,5 @@
 @media(max-width:760px){.board-card{min-height:195px}}
 
 .source-cue{display:block;font-weight:400;margin:6px 0}.image-actions{flex-wrap:wrap}.image-actions .button{font-size:11px}#source-mapping-error{margin:12px 0}.header-actions{flex-wrap:wrap}
+
+.analysis-progress{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:14px 0}.analysis-progress small{display:block;margin-top:6px;font-size:11px;color:var(--muted)}.analysis-progress button{flex-shrink:0}

@@ -22,3 +22,18 @@ export function pageItems(items, page=0, size=24) {
   const index=Math.min(Math.max(0,Math.floor(page)||0),pages-1);
   return {items:items.slice(index*size,(index+1)*size),index,pages,total:items.length};
 }
+
+export function mergeProjectProgress(local,remote){
+ const completed=remote.analysisRun?.status==='done'&&(local.analyzing||local.analysisRun?.startedAt!==remote.analysisRun.startedAt||local.analysisRun?.id!==remote.analysisRun.id);
+ local.characters=remote.characters;
+ for(const key of ['analyzing','analysisRun','analysisError'])local[key]=remote[key];
+ if(completed){local.scenes=remote.scenes;local.sourceMappingError=remote.sourceMappingError;}
+ else for(const scene of local.scenes){const updated=remote.scenes.find(s=>s.id===scene.id);if(updated)for(const key of ['status','images','attempts','error'])scene[key]=updated[key];}
+}
+export function analysisProgress(project,now=Date.now()){
+ const run=project?.analysisRun;
+ if(!project?.analyzing)return '';
+ const seconds=Math.max(0,Math.floor((now-Date.parse(run?.startedAt||new Date(now).toISOString()))/1000)),elapsed=`${Math.floor(seconds/60)}분 ${String(seconds%60).padStart(2,'0')}초`;
+ const phase={preparing:'분석 모델 준비 중',waiting:'GPT 응답을 기다리는 중',retrying:'응답 지연으로 다시 시도하는 중',validating:'새 장면의 대본 구간 검증 중'}[run?.phase]||'분석 응답을 기다리는 중';
+ return `${run?.provider==='claude'?phase.replace('GPT','Claude'):phase} · ${elapsed} · 시도 ${run?.attempt||1}/${run?.maxAttempts||1} · 기존 장면은 완료 후 교체됩니다.`;
+}
